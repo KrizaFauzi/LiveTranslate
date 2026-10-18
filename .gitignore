@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+node_modules/
+extension/dist/
+backend/server
+backend/bin/
+fixtures/*
+!fixtures/README.md
+auth-service/dist/
+http/e2e.env
+http/resterm.env.local.json
+http/.resterm/
+http/resterm.env.json

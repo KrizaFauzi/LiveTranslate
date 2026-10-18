@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "LiveTranslate",
+  "version": "0.1.0",
+  "description": "LiveTranslate: autentikasi dan asisten rapat.",
+  "action": {
+    "default_popup": "index.html"
+  },
+  "host_permissions": [
+    "http://localhost:8989/*"
+  ],
+  "permissions": [
+    "storage"
+  ]
+}

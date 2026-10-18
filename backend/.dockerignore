@@ -1,0 +1,9 @@
+.env
+.env.*
+.git
+node_modules
+server
+bin
+fixtures
+*.wav
+*.mp3

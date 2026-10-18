@@ -1,0 +1,11 @@
+.env
+.env.*
+**/node_modules
+**/dist
+.git
+.agents
+.codex
+.aws
+fixtures
+live_translate
+docs

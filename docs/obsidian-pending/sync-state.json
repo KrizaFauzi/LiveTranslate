@@ -1,0 +1,95 @@
+{
+  "artifacts": [
+    {
+      "source": "docs/superpowers/plans/2026-10-18-agent-initialization.md",
+      "vault": "Obsidian Vault",
+      "destination": "Proyek/LiveTranslate/Plans/2026-10-18-agent-initialization.md",
+      "source_sha256": "cfd4c3a81c2c8fe4e96df4c1083ef5deffea2073d746142313e0cbd668fb08ee",
+      "note_sha256": "450ea740e2b595ac054dd4f9e591e8785a95198acd67a3cb7efcd04239194c8c"
+    },
+    {
+      "source": "docs/initialization/status.md",
+      "vault": "Obsidian Vault",
+      "destination": "Proyek/LiveTranslate/Notes/2026-10-18-initialization-status.md",
+      "source_sha256": "0bca455df85e7aa8092021477fe34a4067d275e17a09d03cfe173447fb734535",
+      "note_sha256": "0bca455df85e7aa8092021477fe34a4067d275e17a09d03cfe173447fb734535"
+    },
+    {
+      "source": "fixtures/README.md",
+      "vault": "Obsidian Vault",
+      "destination": "Proyek/LiveTranslate/Notes/Audio fixtures.md",
+      "source_sha256": "69087b7f8fcaf8757e155ada562b41c909f272d39a34dc48994e860455f75b5b",
+      "note_sha256": "69087b7f8fcaf8757e155ada562b41c909f272d39a34dc48994e860455f75b5b"
+    },
+    {
+      "source": "AGENTS.md",
+      "vault": "Obsidian Vault",
+      "destination": "Proyek/LiveTranslate/Notes/AGENTS.md",
+      "source_sha256": "c74808d77b2e8e42d65491548d7962fbe1278b7a0d949a424747e6c221d9102b",
+      "note_sha256": "c74808d77b2e8e42d65491548d7962fbe1278b7a0d949a424747e6c221d9102b"
+    },
+    {
+      "source": "docs/initialization/deepgram-build-fix.md",
+      "vault": "Obsidian Vault",
+      "destination": "Proyek/LiveTranslate/Notes/2026-10-18-deepgram-build-fix.md",
+      "source_sha256": "648c16ea38444cd42cc6483036bce05be760e17c495f99ba529602120a4a146d",
+      "note_sha256": "648c16ea38444cd42cc6483036bce05be760e17c495f99ba529602120a4a146d"
+    },
+    {
+      "source": "docs/research/2026-10-18-auth-database-proposal.md",
+      "vault": "Obsidian Vault",
+      "destination": "Proyek/LiveTranslate/Notes/2026-10-18-auth-database-proposal.md",
+      "source_sha256": "b4fd02a737f44ef18d19f9ebef7a09828357362cdb835b11b4e9aade0f581043",
+      "note_sha256": "b4fd02a737f44ef18d19f9ebef7a09828357362cdb835b11b4e9aade0f581043"
+    },
+    {
+      "source": "docs/superpowers/specs/2026-10-18-auth-design.md",
+      "vault": "Obsidian Vault",
+      "destination": "Proyek/LiveTranslate/Designs/2026-10-18-auth-design.md",
+      "source_sha256": "4769dcb371f0170edb8658fed4892efb0a368898a8ca4d05c103a16f3b3f355c",
+      "note_sha256": "4769dcb371f0170edb8658fed4892efb0a368898a8ca4d05c103a16f3b3f355c"
+    },
+    {
+      "source": "docs/superpowers/plans/2026-10-18-auth-implementation.md",
+      "vault": "Obsidian Vault",
+      "destination": "Proyek/LiveTranslate/Plans/2026-10-18-auth-implementation.md",
+      "source_sha256": "3b45bc422b323ab251e38ae984f46982ad0c034eb224e85b3989002d13f4670a",
+      "note_sha256": "3b45bc422b323ab251e38ae984f46982ad0c034eb224e85b3989002d13f4670a"
+    },
+    {
+      "source": "docs/implementation/auth-progress.md",
+      "vault": "Obsidian Vault",
+      "destination": "Proyek/LiveTranslate/Notes/2026-10-18-auth-progress.md",
+      "source_sha256": "bdbdeba8467726ab0c3298a21b870865a1cf85a570c19082620a69b938fede5d",
+      "note_sha256": "bdbdeba8467726ab0c3298a21b870865a1cf85a570c19082620a69b938fede5d"
+    },
+    {
+      "source": "migration/README.md",
+      "vault": "Obsidian Vault",
+      "destination": "Proyek/LiveTranslate/Notes/2026-10-18-auth-migrations.md",
+      "source_sha256": "954cbca2d32b5157b32380f7f18e06a5731f4a9f9eb2506b0f1050615135c529",
+      "note_sha256": "954cbca2d32b5157b32380f7f18e06a5731f4a9f9eb2506b0f1050615135c529"
+    },
+    {
+      "source": "http/README.md",
+      "vault": "Obsidian Vault",
+      "destination": "Proyek/LiveTranslate/Notes/2026-10-18-resterm-http-e2e.md",
+      "source_sha256": "9e080808512a43224fe2dd9f9e5a62ba41a253d79f380f61a2610381a5778946",
+      "note_sha256": "9e080808512a43224fe2dd9f9e5a62ba41a253d79f380f61a2610381a5778946"
+    },
+    {
+      "source": "README.md",
+      "vault": "Obsidian Vault",
+      "destination": "Proyek/LiveTranslate/Notes/Initialization README.md",
+      "source_sha256": "37b4b591f34138e9228d9fb7f9aa451d4bcbdc822c0501d0f96c37d264e991c7",
+      "note_sha256": "37b4b591f34138e9228d9fb7f9aa451d4bcbdc822c0501d0f96c37d264e991c7"
+    },
+    {
+      "source": "docs/implementation/auth-status.md",
+      "vault": "Obsidian Vault",
+      "destination": "Proyek/LiveTranslate/Notes/2026-10-18-auth-status.md",
+      "source_sha256": "7eb7b039d55c360245a64961f4cb552c86953b428a1a79e98385b9a13b5b4a28",
+      "note_sha256": "7eb7b039d55c360245a64961f4cb552c86953b428a1a79e98385b9a13b5b4a28"
+    }
+  ]
+}

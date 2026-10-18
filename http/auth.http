@@ -1,0 +1,109 @@
+# Isi email/password di http/resterm.env.json.
+# Jalankan Register, konfirmasi email jika diminta, lalu Login.
+
+### Login sampai logout
+# @workflow auth-session on-failure=stop
+# @step Health using=Health
+# @step Login using=Login
+# @step Profile using=GetProfile
+# @step Refresh using=Refresh
+# @step ProfileAfterRefresh using=GetProfile
+# @step Logout using=Logout
+
+### Health
+# @name Health
+# @assert response.statusCode == 200
+# @assert response.json().service == "livetranslate-backend"
+GET {{baseUrl}}/health
+
+### Register
+# @name Register
+# @assert response.statusCode == 201 || response.statusCode == 202
+# @script pre-request
+> {%
+var email = vars.get("email"), password = vars.get("password");
+if (!email || !password) throw new Error("Isi email dan password di http/resterm.env.json");
+vars.global.set("privatePassword", password, { secret: true });
+request.setBody(JSON.stringify({ email: email, password: password, display_name: vars.get("name") || "Pengguna" }));
+%}
+# @script test
+> {%
+var data = response.json();
+if (response.statusCode === 201 && data && data.session && data.user) {
+  vars.global.set("accessToken", data.session.access_token, { secret: true });
+  vars.global.set("refreshToken", data.session.refresh_token, { secret: true });
+  vars.global.set("userId", data.user.id, { secret: true });
+}
+%}
+POST {{baseUrl}}/api/auth/register
+Content-Type: application/json
+
+### Login
+# @name Login
+# @assert response.statusCode == 200
+# @script pre-request
+> {%
+vars.global.delete("accessToken");
+vars.global.delete("refreshToken");
+vars.global.delete("userId");
+var email = vars.get("email"), password = vars.get("password");
+if (!email || !password) throw new Error("Isi email dan password di http/resterm.env.json");
+vars.global.set("privatePassword", password, { secret: true });
+request.setBody(JSON.stringify({ email: email, password: password }));
+%}
+# @script test
+> {%
+var data;
+try { data = response.json(); } catch (error) { data = null; }
+if (response.statusCode !== 200) throw new Error("HTTP " + response.statusCode + ": " + (data && data.error && data.error.message || "Permintaan gagal"));
+var session = data && data.session, user = data && data.user;
+if (!session || !user || !user.id || typeof session.access_token !== "string" || !session.access_token || typeof session.refresh_token !== "string" || !session.refresh_token) throw new Error("Respons tidak berisi sesi valid");
+vars.global.set("accessToken", session.access_token, { secret: true });
+vars.global.set("refreshToken", session.refresh_token, { secret: true });
+vars.global.set("userId", user.id, { secret: true });
+%}
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+
+### Profil
+# @name GetProfile
+# @assert response.statusCode == 200
+# @script test
+> {%
+var data;
+try { data = response.json(); } catch (error) { data = null; }
+if (response.statusCode !== 200) throw new Error("HTTP " + response.statusCode + ": " + (data && data.error && data.error.message || "Permintaan gagal"));
+if (!data || !data.user || !data.profile || data.user.id !== vars.get("userId") || data.profile.id !== vars.get("userId")) throw new Error("Profil tidak sesuai dengan pengguna yang masuk");
+%}
+GET {{baseUrl}}/api/auth/me
+Authorization: Bearer {{accessToken}}
+
+### Refresh sesi
+# @name Refresh
+# @assert response.statusCode == 200
+# @script pre-request
+> request.setBody(JSON.stringify({ refresh_token: vars.get("refreshToken") }));
+# @script test
+> {%
+var data;
+try { data = response.json(); } catch (error) { data = null; }
+if (response.statusCode !== 200) throw new Error("HTTP " + response.statusCode + ": " + (data && data.error && data.error.message || "Permintaan gagal"));
+var session = data && data.session, user = data && data.user;
+if (!session || !user || !user.id || typeof session.access_token !== "string" || !session.access_token || typeof session.refresh_token !== "string" || !session.refresh_token) throw new Error("Respons tidak berisi sesi valid");
+if (user.id !== vars.get("userId")) throw new Error("Pemilik sesi berubah");
+vars.global.set("accessToken", session.access_token, { secret: true });
+vars.global.set("refreshToken", session.refresh_token, { secret: true });
+vars.global.set("userId", user.id, { secret: true });
+%}
+POST {{baseUrl}}/api/auth/refresh
+Content-Type: application/json
+
+### Logout
+# @name Logout
+# @assert response.statusCode == 204
+# @script test
+> vars.global.delete("accessToken");
+> vars.global.delete("refreshToken");
+> vars.global.delete("userId");
+POST {{baseUrl}}/api/auth/logout
+Authorization: Bearer {{accessToken}}

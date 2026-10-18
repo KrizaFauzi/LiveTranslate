@@ -1,0 +1,32 @@
+:root { font-family: Inter, system-ui, sans-serif; color: #17233b; background: #f3f6fb; font-synthesis: none; }
+* { box-sizing: border-box; }
+body { margin: 0; width: 360px; }
+main { padding: 24px 20px 14px; }
+header { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
+.mark { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; background: #2455d6; color: white; font-weight: 800; }
+h1 { font-size: 21px; margin: 0; letter-spacing: -.5px; }
+h2 { margin: 20px 0; font-size: 18px; overflow-wrap: anywhere; }
+p { font-size: 13px; line-height: 1.6; }
+.subtitle { margin: 2px 0 0; color: #63718b; font-size: 12px; }
+.card { background: white; border: 1px solid #e0e6f0; border-radius: 14px; padding: 20px; }
+.tabs { display: flex; background: #eef2f8; padding: 4px; border-radius: 8px; gap: 4px; }
+.tabs button { flex: 1; padding: 8px; background: transparent; color: #56637b; }
+.tabs button[aria-pressed="true"] { background: white; color: #2455d6; box-shadow: 0 1px 4px #17233b18; }
+fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+label { display: block; margin-bottom: 15px; font-size: 12px; font-weight: 600; }
+input { display: block; width: 100%; padding: 11px 12px; margin-top: 6px; border: 1px solid #cbd5e5; border-radius: 7px; background: #fff; color: #17233b; font: inherit; font-size: 14px; }
+input:focus { outline: 2px solid #2455d6; outline-offset: 1px; }
+small { display: block; margin-top: 5px; color: #63718b; font-weight: 400; }
+button { padding: 11px 16px; border: 0; border-radius: 7px; background: #2455d6; color: white; cursor: pointer; font: inherit; font-size: 13px; font-weight: 600; }
+button:disabled { opacity: .55; cursor: wait; }
+button:focus-visible { outline: 2px solid #2455d6; outline-offset: 3px; }
+form button { width: 100%; margin-top: 3px; }
+.hint { color: #63718b; text-align: center; font-size: 11px; margin: 14px 0 0; }
+.notice { padding: 12px; background: #e9f0ff; border-radius: 8px; color: #244c98; overflow-wrap: anywhere; }
+.error { background: #fff0f0; color: #a12c36; }
+.text-button { background: none; color: #3d5e99; padding: 6px 0; font-size: 12px; }
+footer { margin-top: 18px; text-align: center; }
+footer p { margin: 4px 0; color: #63718b; font-size: 11px; }
+.eyebrow { font-size: 10px; color: #247b58; letter-spacing: 1px; font-weight: 700; }
+.email { color: #63718b; overflow-wrap: anywhere; }
+.secondary { width: 100%; background: #eef2f8; color: #314362; margin-top: 12px; }
