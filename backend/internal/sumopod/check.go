@@ -1,4 +1,4 @@
-package services
+package sumopod
 
 import (
 	"bytes"
@@ -14,7 +14,7 @@ import (
 	"strings"
 )
 
-func CheckSumopod(ctx context.Context, c config.Config) error {
+func Check(ctx context.Context, c config.Config) error {
 	if err := config.Require("SUMOPOD_API_KEY", c.SumopodKey); err != nil {
 		return err
 	}

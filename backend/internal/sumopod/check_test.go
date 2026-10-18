@@ -1,4 +1,4 @@
-package services
+package sumopod
 
 import (
 	"context"
@@ -19,7 +19,7 @@ func TestSumopodRejectsInvalidConfigBeforeNetwork(t *testing.T) {
 		{"plaintext", config.Config{SumopodKey: "test-secret", SumopodModel: "account-model", SumopodBaseURL: "http://ai.sumopod.com/v1"}, "SUMOPOD_BASE_URL"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := CheckSumopod(context.Background(), tc.cfg)
+			err := Check(context.Background(), tc.cfg)
 			if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "test-secret") {
 				t.Fatalf("unexpected error: %v", err)
 			}

@@ -1,4 +1,4 @@
-package httpapi
+package main
 
 import (
 	"encoding/json"
@@ -10,7 +10,7 @@ import (
 
 // Exercise the public mux: a gateway-only test cannot catch missing route registration.
 func TestPublicAuthRoutesAreRegistered(t *testing.T) {
-	handler := Handler(config.Config{})
+	handler := newHandler(config.Config{})
 	for _, route := range []struct{ method, path string }{
 		{"POST", "/api/auth/register"}, {"POST", "/api/auth/login"},
 		{"POST", "/api/auth/refresh"}, {"POST", "/api/auth/logout"}, {"GET", "/api/auth/me"},
@@ -35,5 +35,28 @@ func TestPublicAuthRoutesAreRegistered(t *testing.T) {
 				t.Fatalf("expected structured auth error, got %s", w.Body.String())
 			}
 		})
+	}
+}
+
+func TestConfirmationLanding(t *testing.T) {
+	w := httptest.NewRecorder()
+	newHandler(config.Config{}).ServeHTTP(w, httptest.NewRequest("GET", "/auth/confirmed", nil))
+	if w.Code != 200 || w.Header().Get("Content-Type") != "text/html; charset=utf-8" {
+		t.Fatal(w.Code, w.Header())
+	}
+	if !strings.Contains(w.Body.String(), "buka kembali extension") || strings.Contains(w.Body.String(), "<script") {
+		t.Fatal("confirmation must show instructions without reading tokens")
+	}
+}
+
+func TestPublicHealthRouteIsRegistered(t *testing.T) {
+	w := httptest.NewRecorder()
+	newHandler(config.Config{}).ServeHTTP(w, httptest.NewRequest("GET", "/health", nil))
+	if w.Code != 200 {
+		t.Fatalf("%d: %s", w.Code, w.Body.String())
+	}
+	var body map[string]string
+	if json.Unmarshal(w.Body.Bytes(), &body) != nil || len(body) != 2 || body["status"] != "ok" || body["service"] != "livetranslate-backend" {
+		t.Fatalf("unexpected health response: %s", w.Body.String())
 	}
 }

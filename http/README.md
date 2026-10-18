@@ -22,6 +22,6 @@ Untuk menjalankan login sampai logout sekaligus:
 resterm run -e local -E http/resterm.env.json -W auth-session -f text http/auth.http
 ```
 
-Ubah baseUrl jika alamat backend berbeda. Status 404 berarti route tidak tersedia pada backend yang diakses; rebuild backend. Status 503 berarti konfigurasi/service auth belum siap. Redirect lokal yang didukung adalah http://localhost:8989/auth/confirmed dan harus ditambahkan pada Redirect URLs Supabase.
+Ubah baseUrl jika alamat backend berbeda. Status 404 berarti route tidak tersedia pada backend yang diakses; rebuild backend. Status 503 dengan code supabase_config berarti konfigurasi Supabase belum valid; profile_missing berarti migrasi/backfill/policy RLS perlu diperiksa. Status 502 dengan profile_api_error berarti Data API menolak/gagal melayani query profile. Pesan error menyebut tahap dan status upstream tanpa menampilkan secrets. Redirect lokal yang didukung adalah http://localhost:8989/auth/confirmed dan harus ditambahkan pada Redirect URLs Supabase.
 
 Pengujian HTTP live dari sandbox agent masih dibatasi izin socket. Hasil terperinci ada di docs/implementation/auth-status.md.

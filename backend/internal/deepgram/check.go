@@ -1,19 +1,20 @@
-package services
+package deepgram
 
 import (
 	"context"
 	"errors"
-	api "github.com/deepgram/deepgram-go-sdk/v3/pkg/api/listen/v1/rest"
-	interfaces "github.com/deepgram/deepgram-go-sdk/v3/pkg/client/interfaces/v1"
-	listen "github.com/deepgram/deepgram-go-sdk/v3/pkg/client/listen"
 	"livetranslate/backend/internal/config"
 	"net/http/httptrace"
 	"os"
 	"strings"
 	"time"
+
+	api "github.com/deepgram/deepgram-go-sdk/v3/pkg/api/listen/v1/rest"
+	interfaces "github.com/deepgram/deepgram-go-sdk/v3/pkg/client/interfaces/v1"
+	listen "github.com/deepgram/deepgram-go-sdk/v3/pkg/client/listen"
 )
 
-func CheckDeepgram(ctx context.Context, c config.Config, audio string) error {
+func Check(ctx context.Context, c config.Config, audio string) error {
 	if err := config.Require("DEEPGRAM_API_KEY", c.DeepgramKey); err != nil {
 		return err
 	}

@@ -1,9 +1,9 @@
-package httpapi
+package health
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 )
 
@@ -12,7 +12,9 @@ func TestHealth(t *testing.T) {
 		t.Setenv(key, "")
 	}
 	w := httptest.NewRecorder()
-	Handler().ServeHTTP(w, httptest.NewRequest("GET", "/health", nil))
+	mux := http.NewServeMux()
+	RegisterRoutes(mux)
+	mux.ServeHTTP(w, httptest.NewRequest("GET", "/health", nil))
 	if w.Code != 200 {
 		t.Fatalf("status: %d", w.Code)
 	}
@@ -25,16 +27,5 @@ func TestHealth(t *testing.T) {
 	}
 	if w.Header().Get("Content-Type") != "application/json" {
 		t.Fatal("missing JSON content type")
-	}
-}
-
-func TestConfirmationLanding(t *testing.T) {
-	w := httptest.NewRecorder()
-	Handler().ServeHTTP(w, httptest.NewRequest("GET", "/auth/confirmed", nil))
-	if w.Code != 200 || w.Header().Get("Content-Type") != "text/html; charset=utf-8" {
-		t.Fatal(w.Code, w.Header())
-	}
-	if !strings.Contains(w.Body.String(), "buka kembali extension") || strings.Contains(w.Body.String(), "<script") {
-		t.Fatal("confirmation must show instructions without reading tokens")
 	}
 }
