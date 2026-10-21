@@ -53,7 +53,7 @@ Spike streaming Deepgram (sementara, sudah dihapus) membuktikan dua hal yang mem
 - `MediaRecorder` menghasilkan container webm/opus. Container yang dialirkan ke Deepgram **tidak pernah menghasilkan segmen final**; hanya partial, bahkan 20 detik setelah `Finalize()`.
 - PCM16 mentah (`encoding=linear16`) dan µ-law menghasilkan partial maupun final secara konsisten.
 
-Karena itu capture harus diubah dari `MediaRecorder` ke `AudioWorklet` yang mengirim PCM16 mono. Detail dan alasannya ada di `docs/superpowers/specs/2026-10-21-audio-transcription-design.md`. Implementasi capture PCM16 adalah bagian dari F4, bukan pembenihan F3.
+Karena itu capture diubah dari `MediaRecorder` ke `AudioWorklet` yang mengirim PCM16 mono; perubahan ini sudah dikerjakan pada F4. Detail dan alasannya ada di `docs/superpowers/specs/2026-10-21-audio-transcription-design.md`. Implementasi capture PCM16 adalah bagian dari F4, bukan pembenihan F3.
 
 ## File utama
 
