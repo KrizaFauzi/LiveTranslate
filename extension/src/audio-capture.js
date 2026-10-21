@@ -67,17 +67,23 @@ export function createAudioCapture({ chromeApi, session, credentials, fetchImpl 
     return rate
   }
 
-  async function stopRun() {
-    const stored = await read()
-    const current = active ?? stored
-    if (!current?.run_id) return stored
-    // The offscreen document may already be closed; the run is closed on the server either way.
-    await toOffscreen('audio.capture.stop', { run_id: current.run_id }).catch(() => {})
+  // The document offscreen holds the audio context of the capture. Closing the document closes
+  // the context with it, so a capture that never starts leaves nothing open.
+  async function closeOffscreen(runId) {
+    await toOffscreen('audio.capture.stop', runId ? { run_id: runId } : {}).catch(() => {})
     try {
       await chromeApi.offscreen?.closeDocument?.()
     } catch {
       // Closing an absent document is not an error for the caller.
     }
+  }
+
+  async function stopRun() {
+    const stored = await read()
+    const current = active ?? stored
+    if (!current?.run_id) return stored
+    // The offscreen document may already be closed; the run is closed on the server either way.
+    await closeOffscreen(current.run_id)
     const auth = await credentials()
     if (auth) await api(`/api/audio/runs/${current.run_id}/stop`, auth.accessToken).catch(() => {})
     active = null
@@ -102,8 +108,10 @@ export function createAudioCapture({ chromeApi, session, credentials, fetchImpl 
     // The document offscreen has to exist before it can report its sample rate.
     await ensureOffscreen()
     const sampleRate = await probeSampleRate()
-    const { run } = await api('/api/audio/runs', auth.accessToken, { meeting_id: meetingId, sample_rate: sampleRate })
+    let run = null
     try {
+      const created = await api('/api/audio/runs', auth.accessToken, { meeting_id: meetingId, sample_rate: sampleRate })
+      run = created.run
       const streamId = await chromeApi.tabCapture.getMediaStreamId({ targetTabId: tabId })
       await toOffscreen('audio.capture.start', {
         run_id: run.id,
@@ -113,8 +121,10 @@ export function createAudioCapture({ chromeApi, session, credentials, fetchImpl 
         sample_rate: sampleRate,
       })
     } catch (error) {
-      // The run was created but the capture never started: close it again on the server.
-      await api(`/api/audio/runs/${run.id}/stop`, auth.accessToken).catch(() => {})
+      // The run may exist: close it again on the server.
+      if (run) await api(`/api/audio/runs/${run.id}/stop`, auth.accessToken).catch(() => {})
+      // The document and its audio context stay closed when the start fails.
+      await closeOffscreen()
       throw error
     }
     active = { run_id: run.id, meeting_id: meetingId, tab_id: tabId }
@@ -136,7 +146,12 @@ export function createAudioCapture({ chromeApi, session, credentials, fetchImpl 
     return publish({ ...(current ?? {}), ...input, status })
   }
 
-  async function failRun(message) {
+  async function failRun(message, { source } = {}) {
+    if (source === 'transcript') {
+      // The transcription failed: the capture stops, so no audio is recorded for a run that has no
+      // transcript. The run is closed on the server and the document is closed with it.
+      return stopRun()
+    }
     const stored = await read()
     // Only a run that is still open may be reported as failed: a run that already stopped leaves no
     // run id behind, so the popup never shows a stale run.
@@ -160,7 +175,7 @@ export function createAudioCapture({ chromeApi, session, credentials, fetchImpl 
     start: ({ meetingId, tabId }) => serialize(() => startRun({ meetingId, tabId })),
     stop: () => serialize(() => stopRun()),
     progress: input => serialize(() => progressRun(input)),
-    fail: message => serialize(() => failRun(message)),
+    fail: (message, options) => serialize(() => failRun(message, options)),
     stopIfTab: tabId => serialize(() => stopIfTabRun(tabId)),
   }
 }

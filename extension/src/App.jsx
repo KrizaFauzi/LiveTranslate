@@ -1,15 +1,7 @@
 import { useEffect, useState } from 'react'
 import { API_BASE_URL } from './config.js'
 import { createPopupAuth, extensionRequest } from './extension-client.js'
-import { transcriptLines } from './transcript-state.js'
-
-// The status of the transcript is what the user sees while the meeting runs.
-const TRANSCRIPT_STATUS = {
-  waiting: 'Menunggu suara pertama',
-  transcribing: 'Transkrip live ditampilkan',
-  transcript_error: 'Transkripsi gagal.',
-  transcribed: 'Transkrip selesai',
-}
+import { TRANSCRIPT_STATUS, transcriptLines, transcriptNotice } from './transcript-state.js'
 
 const auth = createPopupAuth(API_BASE_URL)
 export default function App() {
@@ -25,6 +17,8 @@ export default function App() {
   const [transcript, setTranscript] = useState(null)
   // The popup shows the finals in order and the partial that is still running.
   const lines = transcriptLines(transcript)
+  // The reason of a failure is only shown when it says more than the status of the transcript.
+  const notice = transcriptNotice(transcript)
 
   useEffect(() => {
     if (!globalThis.chrome?.runtime?.id) return
@@ -181,7 +175,7 @@ export default function App() {
       {account && <section className="card" aria-label="Transkrip">
         <span className="eyebrow">TRANSKRIP</span>
         <p role="status" aria-live="polite">{TRANSCRIPT_STATUS[transcript?.status] ?? 'Belum ada transkrip.'}</p>
-        {transcript?.message && <p className="notice error" role="alert">{transcript.message}</p>}
+        {notice && <p className="notice error" role="alert">{notice}</p>}
         {lines.map((text, index) => (
           <p key={index} className={transcript?.partial?.text && index === lines.length - 1 ? 'notice' : undefined}>{text}</p>
         ))}

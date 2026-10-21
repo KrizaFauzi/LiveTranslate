@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { emptyState, applySegment, applyStatus, transcriptLines } from './transcript-state.js'
+import { emptyState, applySegment, applyStatus, transcriptLines, transcriptNotice, TRANSCRIPT_STATUS } from './transcript-state.js'
 
 test('final replaces the trailing partial and is appended once', () => {
   let state = emptyState('run-1')
@@ -73,4 +73,18 @@ test('an empty text is left out of the popup', () => {
   state = applySegment(state, { seq: 1, type: 'final', text: '' })
   state = applySegment(state, { seq: 2, type: 'partial', text: '' })
   assert.deepEqual(transcriptLines(state), [])
+})
+
+test('the popup does not show the same sentence twice', () => {
+  const same = applyStatus(emptyState('run-1'), 'transcript_error', 'Transkripsi gagal.')
+  assert.equal(transcriptNotice(same), null, 'the message is the same as the status of the transcript')
+  const other = applyStatus(emptyState('run-1'), 'transcript_error', 'Gagal membaca stream transkrip.')
+  assert.equal(transcriptNotice(other), 'Gagal membaca stream transkrip.', 'a message that adds something is shown')
+  assert.equal(transcriptNotice(emptyState('run-1')), null, 'a transcript without a failure has no message')
+})
+
+test('every status of the transcript has a sentence for the popup', () => {
+  for (const status of ['waiting', 'transcribing', 'transcript_error', 'transcribed']) {
+    assert.ok(TRANSCRIPT_STATUS[status], status)
+  }
 })

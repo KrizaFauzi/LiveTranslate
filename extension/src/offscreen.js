@@ -41,6 +41,9 @@ export function createOffscreenCapture({
   let queue = Promise.resolve()
   let transcriptController = null
   let transcriptState = null
+  // The transcription failed: the capture stops, so the failures that follow are not reported
+  // again.
+  let transcriptFailed = false
   // Every change of the transcript state is a read-modify-write cycle, so the changes run one
   // after another: a segment never overwrites the one before it.
   let stateQueue = Promise.resolve()
@@ -51,8 +54,14 @@ export function createOffscreenCapture({
     return chromeApi.runtime.sendMessage({ type: 'audio.progress', input: { chunks, bytes, dropped } }).catch(() => {})
   }
 
-  function reportError(message) {
-    return chromeApi.runtime.sendMessage({ type: 'audio.error', input: { message } }).catch(() => {})
+  // reportError sends a failure to the worker. The source tells the worker what failed: a failed
+  // upload only degrades the capture, a failed transcription stops it.
+  //
+  // A failure of the upload after the transcription failed is not reported again: the capture is
+  // stopping because of the transcription, and the worker already knows about it.
+  function reportError(message, source) {
+    if (source !== 'transcript' && transcriptFailed) return Promise.resolve()
+    return chromeApi.runtime.sendMessage({ type: 'audio.error', input: { message, source } }).catch(() => {})
   }
 
   // The transcript state lives in the session storage: the popup reads it while the capture runs.
@@ -63,10 +72,12 @@ export function createOffscreenCapture({
   }
 
   // updateState applies one change to the transcript state. The changes run one after another, so
-  // a segment never overwrites the one before it.
+  // a segment never overwrites the one before it. A state without a run is not published: nothing
+  // was transcribed for it.
   function updateState(change) {
     stateQueue = stateQueue.then(async () => {
       transcriptState = change(transcriptState ?? emptyState(null))
+      if (!transcriptState.run_id) return
       await writeState(transcriptState)
     }).catch(() => {})
     return stateQueue
@@ -87,9 +98,11 @@ export function createOffscreenCapture({
       onSegment: segment => { updateState(state => applySegment(state, segment)) },
       onEnd: () => { updateState(state => applyStatus(state, 'transcribed')) },
       onError: message => {
+        transcriptFailed = true
         updateState(state => applyStatus(state, 'transcript_error', message))
-        // The worker owns the run, so it has to learn that the transcription failed.
-        reportError(message)
+        // The worker owns the run, so it has to learn that the transcription failed: the capture
+        // stops with it.
+        reportError(message, 'transcript')
       },
     }).catch(() => reportError('Gagal menyimpan transkrip.'))
   }
@@ -241,6 +254,8 @@ export function createOffscreenCapture({
 
   async function start(input) {
     if (node) return
+    // A new capture starts clean: the failures of the run before it do not silence its own.
+    transcriptFailed = false
     run = { id: input.run_id, token: input.token, baseUrl: input.base_url || '' }
     stream = await mediaDevices.getUserMedia({
       audio: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: input.stream_id } },

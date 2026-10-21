@@ -20,6 +20,7 @@ function chrome({ captureResponse = null, probeResponse = { ok: true, sample_rat
   return {
     created,
     messages,
+    get open() { return document },
     api: {
       storage: { session: storage() },
       tabCapture: { getMediaStreamId: async ({ targetTabId }) => `stream-${targetTabId}` },
@@ -318,4 +319,53 @@ test('a failure after the capture stopped leaves no stale run id behind', async 
   const status = await capture.read()
   assert.equal(status.status, 'error')
   assert.equal(status.run_id, undefined)
+})
+
+test('a failed transcription stops the capture', async () => {
+  const c = chrome()
+  const requests = []
+  const capture = createAudioCapture({
+    chromeApi: c.api,
+    session: c.api.storage.session,
+    credentials: async () => ({ userId: 'user', accessToken: 'token' }),
+    fetchImpl: async (url, options) => { requests.push([url, options]); return Response.json({ run }) },
+    baseUrl: 'https://api.test',
+  })
+  await capture.start({ meetingId, tabId: 7 })
+  const status = await capture.fail('Transkripsi gagal.', { source: 'transcript' })
+  assert.equal(status.status, 'stopped', 'a failed transcription stops the capture')
+  assert.ok(requests.some(([url]) => url === `https://api.test/api/audio/runs/${run.id}/stop`), 'the run is closed on the server')
+  assert.ok(c.messages.some(message => message.type === 'audio.capture.stop'), 'the recorder is stopped')
+})
+
+test('a failed upload does not stop the capture', async () => {
+  const c = chrome()
+  const requests = []
+  const capture = createAudioCapture({
+    chromeApi: c.api,
+    session: c.api.storage.session,
+    credentials: async () => ({ userId: 'user', accessToken: 'token' }),
+    fetchImpl: async (url, options) => { requests.push([url, options]); return Response.json({ run }) },
+    baseUrl: 'https://api.test',
+  })
+  await capture.start({ meetingId, tabId: 7 })
+  const status = await capture.fail('Gagal mengirim audio ke server.')
+  assert.equal(status.status, 'error', 'a failed upload degrades the capture, it does not stop it')
+  assert.ok(!requests.some(([url]) => url.endsWith('/stop')), 'the run stays open on the server')
+  assert.ok(!c.messages.some(message => message.type === 'audio.capture.stop'), 'the recorder keeps running')
+})
+
+test('a start that fails after the probe closes the offscreen document', async () => {
+  const c = chrome()
+  const capture = createAudioCapture({
+    chromeApi: c.api,
+    session: c.api.storage.session,
+    credentials: async () => ({ userId: 'user', accessToken: 'token' }),
+    fetchImpl: async () => { throw new Error('backend mati') },
+    baseUrl: 'https://api.test',
+  })
+  await assert.rejects(() => capture.start({ meetingId, tabId: 7 }), /backend mati/)
+  assert.equal(c.open, false, 'the offscreen document is closed')
+  assert.ok(c.messages.some(message => message.type === 'audio.capture.stop'), 'the audio context of the document is closed')
+  assert.equal(c.api.storage.session.values.audio_status, undefined, 'no capture is published')
 })

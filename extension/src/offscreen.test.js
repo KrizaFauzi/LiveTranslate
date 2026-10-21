@@ -309,3 +309,50 @@ test('a broken transcript stream marks the state as failed', async () => {
   assert.ok(error, 'the worker learns about the failure')
   assert.match(error.input.message, /Gagal membaca stream transkrip/)
 })
+
+test('a failed transcription is reported as a failure of the transcription', async () => {
+  const env = environment({ fetchImpl: transcriptFetch([], { broken: true }) })
+  const capture = createOffscreenCapture(env)
+  await capture.start(input)
+  assert.ok(await waitFor(() => env.sent.some(message => message.type === 'audio.error')))
+  const error = env.sent.find(message => message.type === 'audio.error')
+  assert.equal(error.input.source, 'transcript', 'the worker knows that the transcription failed')
+})
+
+test('a capture that never started publishes no transcript and closes its context', async () => {
+  const env = environment({ fetchImpl: transcriptFetch([]) })
+  const capture = createOffscreenCapture(env)
+  // The worker probes the document before it creates the run: the run may never exist.
+  const probe = await new Promise(resolve => capture.handleMessage({ type: 'audio.capture.probe' }, resolve))
+  assert.equal(probe.ok, true)
+  await new Promise(resolve => capture.handleMessage({ type: 'audio.capture.stop' }, resolve))
+  assert.equal(env.contexts[0].closed, true, 'the audio context is closed')
+  assert.equal(env.session.values.transcript_state, undefined, 'a run that never existed has no transcript')
+})
+
+test('a new capture reports its own upload failures again', async () => {
+  let transcripts = 0
+  const env = environment({
+    fetchImpl: async url => {
+      if (url.includes('/transcript')) {
+        transcripts += 1
+        // Only the transcription of the first capture fails.
+        return transcripts === 1
+          ? { ok: true, status: 200, body: brokenBody() }
+          : { ok: true, status: 200, body: fakeBody(['event: end\ndata: {"run_id":"run-1"}\n\n']) }
+      }
+      return new Response(null, { status: 500 })
+    },
+  })
+  const capture = createOffscreenCapture(env)
+  await capture.start(input)
+  assert.ok(await waitFor(() => env.sent.some(message => message.type === 'audio.error')), 'the transcription failure is reported')
+  await capture.stop()
+  env.sent.length = 0
+  await capture.start(input)
+  feed(env.nodes[env.nodes.length - 1])
+  await delay(20)
+  const error = env.sent.find(message => message.type === 'audio.error')
+  assert.ok(error, 'the failure of the new capture is reported again')
+  assert.match(error.input.message, /Gagal mengirim audio/)
+})

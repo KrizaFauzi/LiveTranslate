@@ -4,6 +4,14 @@
 // At most 200 finals are kept, so a long meeting does not fill the storage of the browser.
 const FINAL_LIMIT = 200
 
+// The status of the transcript and the sentence the popup shows for it.
+export const TRANSCRIPT_STATUS = {
+  waiting: 'Menunggu suara pertama',
+  transcribing: 'Transkrip live ditampilkan',
+  transcript_error: 'Transkripsi gagal.',
+  transcribed: 'Transkrip selesai',
+}
+
 // emptyState starts the transcript of one run: no segment, no text, and the run waits for the
 // first sound.
 export function emptyState(runId) {
@@ -48,4 +56,11 @@ export function transcriptLines(state) {
   const partial = state.partial?.text ?? ''
   if (partial) lines.push(partial)
   return lines
+}
+
+// transcriptNotice is the reason of the failure that the popup shows under the status. It is left
+// out when the message says the same as the status, so the user does not read it twice.
+export function transcriptNotice(state) {
+  if (!state?.message) return null
+  return state.message === TRANSCRIPT_STATUS[state.status] ? null : state.message
 }
