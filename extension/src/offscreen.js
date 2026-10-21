@@ -8,6 +8,7 @@ const PREFERRED_SAMPLE_RATE = 48000
 // reported instead of growing the queue without bound.
 const MAX_PENDING_FRAMES = 50
 const REQUEST_TIMEOUT_MS = 10000
+const TOKEN_TIMEOUT_MS = 5000
 const STOP_DRAIN_TIMEOUT_MS = 5000
 
 export function createOffscreenCapture({
@@ -18,6 +19,7 @@ export function createOffscreenCapture({
   WorkletNodeClass = globalThis.AudioWorkletNode,
   requestTimeoutMs = REQUEST_TIMEOUT_MS,
   maxPendingFrames = MAX_PENDING_FRAMES,
+  tokenTimeoutMs = TOKEN_TIMEOUT_MS,
   stopDrainTimeoutMs = STOP_DRAIN_TIMEOUT_MS,
 } = {}) {
   let stream = null
@@ -53,6 +55,21 @@ export function createOffscreenCapture({
     })
   }
 
+  // The service worker has to answer within the bound: an unanswered request would freeze the
+  // upload chain for good.
+  async function requestToken() {
+    let timer
+    const timeout = new Promise(resolve => { timer = setTimeout(() => resolve(null), tokenTimeoutMs) })
+    try {
+      const refreshed = await Promise.race([chromeApi.runtime.sendMessage({ type: 'audio.token' }), timeout])
+      return refreshed?.data?.token ?? null
+    } catch {
+      return null
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   async function upload(buffer) {
     let response
     try {
@@ -63,8 +80,7 @@ export function createOffscreenCapture({
       return false
     }
     if (response.status === 401) {
-      const refreshed = await chromeApi.runtime.sendMessage({ type: 'audio.token' }).catch(() => null)
-      const token = refreshed?.data?.token
+      const token = await requestToken()
       if (!token) {
         reportError('Token tidak dapat diperbarui.')
         return false

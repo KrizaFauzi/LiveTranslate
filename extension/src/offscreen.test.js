@@ -7,7 +7,7 @@ const FRAME_BYTES = FRAME_SAMPLES * 2
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-function environment({ fetchImpl, contextSampleRate } = {}) {
+function environment({ fetchImpl, contextSampleRate, tokenHangs = false } = {}) {
   const sent = []
   const tracks = []
   const contexts = []
@@ -16,7 +16,12 @@ function environment({ fetchImpl, contextSampleRate } = {}) {
   const chromeApi = {
     runtime: {
       getURL: path => `chrome-extension://test/${path}`,
-      sendMessage: async message => { sent.push(message); return { ok: true, data: { token: 'fresh-token' } } },
+      sendMessage: message => {
+        sent.push(message)
+        // A service worker that never answers must not freeze the upload chain.
+        if (tokenHangs && message.type === 'audio.token') return new Promise(() => {})
+        return Promise.resolve({ ok: true, data: { token: 'fresh-token' } })
+      },
       onMessage: { addListener: () => {} },
     },
   }
@@ -146,4 +151,21 @@ test('the reported sample rate is the rate of the audio context', async () => {
   assert.equal(response.ok, true)
   assert.equal(response.sample_rate, 44100)
   assert.equal(env.contexts[0].requested, 48000)
+})
+
+test('an unanswered token request stops on its own and the chain keeps moving', async () => {
+  const calls = []
+  const env = environment({
+    fetchImpl: async () => { calls.push('chunk'); return new Response(null, { status: 401 }) },
+    tokenHangs: true,
+  })
+  const capture = createOffscreenCapture({ ...env, tokenTimeoutMs: 50 })
+  await capture.start(input)
+  feed(env.nodes[0])
+  await delay(120)
+  const error = env.sent.find(message => message.type === 'audio.error')
+  assert.match(error.input.message, /Token tidak dapat diperbarui/)
+  feed(env.nodes[0])
+  await delay(30)
+  assert.equal(calls.length, 2, 'ran upload lanjut setelah permintaan token tidak dijawab')
 })
