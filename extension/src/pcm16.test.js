@@ -17,3 +17,7 @@ test('frame size follows the sample rate', () => {
   assert.equal(frameSizeFor(48000, 100), 4800)
   assert.equal(frameSizeFor(16000, 100), 1600)
 })
+
+test('an empty channel set is refused instead of turning into silence', () => {
+  assert.throws(() => toMonoPcm16([], 4), /Kanal audio kosong/)
+})

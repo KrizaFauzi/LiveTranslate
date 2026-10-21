@@ -1,4 +1,5 @@
 export function toMonoPcm16(channels, length) {
+  if (!channels?.length) throw new Error('Kanal audio kosong.')
   const out = new Int16Array(length)
   for (let i = 0; i < length; i += 1) {
     let sum = 0
