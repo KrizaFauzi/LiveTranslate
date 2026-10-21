@@ -169,7 +169,7 @@ offscreen (AudioWorklet -> PCM16 mono 100 ms)
 - Format wire adalah PCM16 mono mentah dengan sample rate run; segmen `partial` dan `final` keduanya diterima.
 - Segmen membawa urutan (`seq`), waktu mulai, durasi, dan bahasa. Partial terbaru menimpa partial sebelumnya; final masuk daftar final dan tidak berubah diam-diam.
 - Popup menampilkan daftar final lalu partial terakhir. Popup yang dibuka ulang menerima backlog segmen yang terlewat lewat query `since`.
-- Kalau transkripsi gagal, capture dihentikan dan popup menampilkan "Transkripsi gagal. Capture dihentikan".
+- Kalau transkripsi gagal, popup menampilkan "Transkripsi gagal." dan capture dihentikan otomatis (status capture menjadi "Capture dihentikan.").
 - **Audio maupun transkrip tidak pernah disimpan** di database, log, atau file. Yang tersimpan hanya metadata run (`meeting_runs`): status, jumlah byte, jumlah chunk, dan waktu mulai/berhenti. Backlog segmen hanya hidup di memori backend.
 
 Status dan bukti verifikasi ada di [status audio capture](docs/implementation/audio-status.md); desain lengkap ada di [spec transkripsi](docs/superpowers/specs/2026-10-21-audio-transcription-design.md).

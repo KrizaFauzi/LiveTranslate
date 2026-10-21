@@ -117,4 +117,4 @@ Perintah berikut dijalankan di workspace ini pada 2026-10-22:
 7. Pastikan `.env` backend memuat `DEEPGRAM_API_KEY`, `DEEPGRAM_MODEL=nova-2`, dan `DEEPGRAM_LANGUAGE=multi`, lalu build ulang container backend. Tanpa itu pembuatan run gagal dengan 503 `deepgram_config`.
 8. Saat ada suara, popup harus menampilkan segmen transkrip: status berubah dari "Menunggu suara pertama" ke "Transkrip live ditampilkan". Tutup lalu buka popup: transkrip tetap ada karena state disimpan di `chrome.storage.session`.
 9. Tekan "Berhenti merekam"; status akhir menjadi "Transkrip selesai" dan `meeting_runs` menjadi `stopped`.
-10. Kalau provider gagal, popup menampilkan "Transkripsi gagal. Capture dihentikan" dan capture harus berhenti sendiri.
+10. Kalau provider gagal, popup menampilkan "Transkripsi gagal." dan capture harus berhenti sendiri (status capture menjadi "Capture dihentikan.").
