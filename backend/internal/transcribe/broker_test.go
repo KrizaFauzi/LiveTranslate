@@ -4,32 +4,64 @@ import (
 	"context"
 	"errors"
 	"livetranslate/backend/internal/config"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 type fakeStream struct {
-	writes  [][]byte
-	results chan Result
-	errors  chan error
-	closed  bool
+	mu        sync.Mutex
+	writes    [][]byte
+	results   chan Result
+	errors    chan error
+	closed    bool
+	finalText string
 }
 
-func (s *fakeStream) Write(payload []byte) error { s.writes = append(s.writes, payload); return nil }
-
-// Finalize publishes the final transcript and ends the provider stream, like the
-// real provider that flushes the pending transcript and then closes the connection.
-func (s *fakeStream) Finalize() error {
-	select {
-	case s.results <- Result{Text: "selamat pagi", IsFinal: true}:
-	default:
-	}
-	close(s.results)
+func (s *fakeStream) Write(payload []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.writes = append(s.writes, payload)
 	return nil
 }
-func (s *fakeStream) Close() error           { s.closed = true; return nil }
+
+// Finalize flushes the provider: it publishes the final transcript when the fake
+// holds one, but it never ends the stream on its own.
+func (s *fakeStream) Finalize() error {
+	if s.finalText == "" {
+		return nil
+	}
+	select {
+	case s.results <- Result{Text: s.finalText, IsFinal: true}:
+	default:
+	}
+	return nil
+}
+
+func (s *fakeStream) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	return nil
+}
+
 func (s *fakeStream) Results() <-chan Result { return s.results }
 func (s *fakeStream) Errors() <-chan error   { return s.errors }
+
+// writeCount reports how many payloads reached the provider.
+func (s *fakeStream) writeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.writes)
+}
+
+// isClosed reports whether the provider stream was closed.
+func (s *fakeStream) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
 
 type fakeProvider struct {
 	stream *fakeStream
@@ -158,13 +190,13 @@ func TestSessionWriteReachesProvider(t *testing.T) {
 	if err := session.Write([]byte{1, 2, 3}); err != nil {
 		t.Fatal(err)
 	}
-	if len(stream.writes) != 1 {
-		t.Fatalf("unexpected writes: %d", len(stream.writes))
+	if stream.writeCount() != 1 {
+		t.Fatalf("unexpected writes: %d", stream.writeCount())
 	}
 }
 
-func TestCloseFlushesTheFinalSegment(t *testing.T) {
-	stream := &fakeStream{results: make(chan Result, 4), errors: make(chan error, 1)}
+func TestCloseDeliversTheFinalSegment(t *testing.T) {
+	stream := &fakeStream{results: make(chan Result, 4), errors: make(chan error, 1), finalText: "selamat pagi"}
 	broker := NewBroker(config.Config{}, &fakeProvider{stream: stream})
 	session, err := broker.Open(context.Background(), "run-1", 48000)
 	if err != nil {
@@ -172,6 +204,7 @@ func TestCloseFlushesTheFinalSegment(t *testing.T) {
 	}
 	segments, unsubscribe := session.Subscribe(0)
 	defer unsubscribe()
+	start := time.Now()
 	if err := session.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -181,6 +214,25 @@ func TestCloseFlushesTheFinalSegment(t *testing.T) {
 	}
 	if _, ok := <-segments; ok {
 		t.Fatal("expected the subscriber channel to close")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("close waited %s for the final segment", elapsed)
+	}
+}
+
+func TestCloseReturnsQuicklyWithoutAFinalSegment(t *testing.T) {
+	stream := &fakeStream{results: make(chan Result, 1), errors: make(chan error, 1)}
+	broker := NewBroker(config.Config{}, &fakeProvider{stream: stream})
+	session, err := broker.Open(context.Background(), "run-1", 48000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("close waited %s for a final segment that never came", elapsed)
 	}
 }
 
@@ -198,11 +250,56 @@ func TestSessionCloseIsIdempotent(t *testing.T) {
 	if err := session.Close(); err != nil {
 		t.Fatalf("second close: %v", err)
 	}
+	if !stream.isClosed() {
+		t.Fatal("expected the provider stream to be closed")
+	}
 	unsubscribe()
 	for {
 		if _, ok := <-segments; !ok {
 			break
 		}
+	}
+}
+
+func TestSessionErrKeepsTheProviderFailure(t *testing.T) {
+	stream := &fakeStream{results: make(chan Result, 1), errors: make(chan error, 1)}
+	broker := NewBroker(config.Config{}, &fakeProvider{stream: stream})
+	session, err := broker.Open(context.Background(), "run-1", 48000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.Err() != nil {
+		t.Fatal("expected no failure before the provider fails")
+	}
+	stream.errors <- errors.New("provider body: rahasia")
+	deadline := time.Now().Add(2 * time.Second)
+	for session.Err() == nil && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	failure := session.Err()
+	if failure == nil {
+		t.Fatal("expected the provider failure to be kept")
+	}
+	if failure.Error() == "" {
+		t.Fatal("expected a failure message")
+	}
+	if strings.Contains(failure.Error(), "rahasia") {
+		t.Fatalf("the provider detail leaked: %q", failure.Error())
+	}
+}
+
+func TestSessionErrIsNilAfterANormalEnd(t *testing.T) {
+	stream := &fakeStream{results: make(chan Result, 1), errors: make(chan error, 1)}
+	broker := NewBroker(config.Config{}, &fakeProvider{stream: stream})
+	session, err := broker.Open(context.Background(), "run-1", 48000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if session.Err() != nil {
+		t.Fatalf("expected no failure after a normal end: %v", session.Err())
 	}
 }
 

@@ -10,11 +10,21 @@ import (
 const backlogLimit = 100
 
 // finalizeTimeout bounds the wait for the provider to deliver the flushed transcript.
-const finalizeTimeout = 2 * time.Second
+const finalizeTimeout = 500 * time.Millisecond
 
 // subscriberCapacity holds a whole backlog replay plus live segments, so the
 // replay never blocks the publisher and the segment order stays intact.
 const subscriberCapacity = backlogLimit
+
+// errProviderFailed is the generic failure a session keeps when the provider fails.
+// The provider error text never reaches the client, so no provider detail can leak.
+var errProviderFailed = errors.New("transkripsi gagal")
+
+// providerError keeps the provider failure as its cause while reporting a generic message.
+type providerError struct{ cause error }
+
+func (e providerError) Error() string { return errProviderFailed.Error() }
+func (e providerError) Unwrap() error { return e.cause }
 
 // Session is one live transcription for one run.
 type Session struct {
@@ -27,12 +37,15 @@ type Session struct {
 	subscribers map[chan Segment]int
 	closed      bool
 	errCh       chan error
-	done        chan struct{}
-	finished    chan struct{}
-	wg          sync.WaitGroup
-	once        sync.Once
-	streamOnce  sync.Once
-	closeErr    error
+	// err keeps the terminal provider failure, guarded by mu.
+	err        error
+	done       chan struct{}
+	finished   chan struct{}
+	finalCh    chan struct{}
+	wg         sync.WaitGroup
+	once       sync.Once
+	streamOnce sync.Once
+	closeErr   error
 }
 
 // NewSession starts one live transcription and publishes the provider results to its subscribers.
@@ -43,6 +56,7 @@ func NewSession(stream Stream) *Session {
 		errCh:       make(chan error, 1),
 		done:        make(chan struct{}),
 		finished:    make(chan struct{}),
+		finalCh:     make(chan struct{}, 1),
 	}
 	session.wg.Add(3)
 	go session.forwardResults()
@@ -76,8 +90,9 @@ func (s *Session) Close() error {
 	return s.closeErr
 }
 
-// flush asks the provider for the pending transcript and waits for the provider
-// to deliver it. A provider that fails to flush does not stop the session.
+// flush asks the provider for the pending transcript and waits for the final
+// segment it produces. The wait ends as soon as a final segment is published or
+// the provider ends, so a provider without a final segment never stalls the close.
 func (s *Session) flush() {
 	s.mu.Lock()
 	closed := s.closed
@@ -85,8 +100,13 @@ func (s *Session) flush() {
 	if closed {
 		return
 	}
+	select {
+	case <-s.finalCh:
+	default:
+	}
 	_ = s.stream.Finalize()
 	select {
+	case <-s.finalCh:
 	case <-s.finished:
 	case <-time.After(finalizeTimeout):
 	}
@@ -121,6 +141,14 @@ func (s *Session) Subscribe(since int) (<-chan Segment, func()) {
 	}
 }
 
+// Err returns the terminal provider failure of the session, or nil when the
+// session ended normally.
+func (s *Session) Err() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.err
+}
+
 // Segments returns a copy of the backlog.
 func (s *Session) Segments() []Segment {
 	s.mu.Lock()
@@ -148,6 +176,12 @@ func (s *Session) publish(result Result) {
 	s.backlog = append(s.backlog, segment)
 	if len(s.backlog) > backlogLimit {
 		s.backlog = s.backlog[len(s.backlog)-backlogLimit:]
+	}
+	if result.IsFinal {
+		select {
+		case s.finalCh <- struct{}{}:
+		default:
+		}
 	}
 	for subscriber, since := range s.subscribers {
 		if segment.Seq <= since {
@@ -227,13 +261,29 @@ func (s *Session) supervise() {
 		select {
 		case <-s.done:
 			return
-		case _, ok := <-s.errCh:
+		case failure, ok := <-s.errCh:
 			if !ok {
 				return
 			}
+			s.setErr(failure)
 			s.shutdown()
 			s.closeStream()
 			return
 		}
 	}
+}
+
+// setErr keeps the terminal provider failure so a client can tell a provider
+// failure from a session that ended normally.
+func (s *Session) setErr(failure error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return
+	}
+	if failure == nil {
+		s.err = errProviderFailed
+		return
+	}
+	s.err = providerError{cause: failure}
 }
