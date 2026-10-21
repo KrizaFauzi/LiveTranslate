@@ -165,6 +165,13 @@ func (s *Session) Err() error {
 	return s.err
 }
 
+// SubscriberCount reports how many subscribers the session still holds.
+func (s *Session) SubscriberCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.subscribers)
+}
+
 // Segments returns a copy of the backlog.
 func (s *Session) Segments() []Segment {
 	s.mu.Lock()

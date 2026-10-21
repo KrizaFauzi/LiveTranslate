@@ -8,7 +8,6 @@ import (
 	"livetranslate/backend/internal/transcribe"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -307,16 +306,20 @@ func TestTranscriptStreamEndsWhenTheClientDisconnects(t *testing.T) {
 		h.ServeHTTP(writer, request)
 		close(returned)
 	}()
-	// The stream starts before the client leaves, so the subscription exists.
-	waitForStream(t, writer)
+	// The subscription has to exist before the client leaves, so the test proves
+	// that a real subscription is created and released again.
+	waitForSubscribers(t, session, 1)
 	cancel()
 	select {
 	case <-returned:
 	case <-time.After(2 * time.Second):
 		t.Fatal("the handler did not return after the client disconnected")
 	}
-	if count := subscriberCount(session); count != 0 {
+	if count := session.SubscriberCount(); count != 0 {
 		t.Fatalf("the subscription was not released: %d subscribers", count)
+	}
+	if writer.status() != 200 {
+		t.Fatalf("the stream did not start: %d", writer.status())
 	}
 }
 
@@ -328,23 +331,15 @@ func TestTranscriptBudgetStaysBelowTheServerWriteTimeout(t *testing.T) {
 	}
 }
 
-// waitForStream waits until the route starts the event stream.
-func waitForStream(t *testing.T, writer *eventWriter) {
+// waitForSubscribers waits until the session holds the wanted number of
+// subscribers.
+func waitForSubscribers(t *testing.T, session *transcribe.Session, want int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
-	for writer.status() == 0 {
+	for session.SubscriberCount() != want {
 		if time.Now().After(deadline) {
-			t.Fatal("the stream did not start")
+			t.Fatalf("the session holds %d subscribers, want %d", session.SubscriberCount(), want)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if writer.status() != 200 {
-		t.Fatalf("the stream did not start: %d", writer.status())
-	}
-}
-
-// subscriberCount reports how many subscribers the session still holds. The
-// field is unexported, so the test reads it with reflection.
-func subscriberCount(session *transcribe.Session) int {
-	return reflect.ValueOf(session).Elem().FieldByName("subscribers").Len()
 }
