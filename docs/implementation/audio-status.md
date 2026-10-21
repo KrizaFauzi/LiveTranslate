@@ -79,7 +79,7 @@ Karena itu capture harus diubah dari `MediaRecorder` ke `AudioWorklet` yang meng
 | `npm test` di extension | LULUS | 49/49 pada 2026-10-21; 104/104 pada 2026-10-22 setelah penambahan transkripsi, termasuk test parser SSE dan state transkrip |
 | `npm run build` di extension | LULUS | Vite menghasilkan `dist/offscreen.html`, `dist/background.js`, popup, dan manifest |
 | Migrasi 0003 di project nyata | LULUS | Tabel, 3 policy owner-only, 2 fungsi `SECURITY INVOKER`, `anon` tanpa EXECUTE; re-apply exit 0 |
-| Harness migrasi lokal | LULUS | `sh migration/tests/check-meetings.sh`: apply dua kali, akuntansi byte/chunk, stop idempoten, chunk setelah stop ditolak, isolasi akun lain, `anon` ditolak. Balapan startup diperbaiki dengan probe koneksi nyata dan satu sesi psql |
+| Harness migrasi lokal | LULUS | `sh migration/tests/check-meetings.sh`: apply dua kali, akuntansi byte/chunk, stop idempoten, chunk setelah stop ditolak, isolasi akun lain, `anon` ditolak. Balapan startup diperbaiki dengan probe koneksi nyata dan satu sesi psql; probe memakai TCP karena server bootstrap entrypoint hanya mendengarkan socket, sehingga probe hanya bisa mencapai server yang tetap hidup (2026-10-22, 4/4 jalan berturut-turut) |
 | API capture live | LULUS | Create run 201, chunk 200 (11 byte → 22 byte, 1 → 2 chunk), stop 200 dengan `ended_at`, chunk setelah stop 409, tanpa token 401, meeting akun lain 404 |
 | Baris run di database | LULUS | `stopped|22|2|t` |
 | Capture audio nyata di Chrome | BELUM DIUJI | Tidak ada binary Chrome di lingkungan ini; jalur diuji dengan API browser tiruan |

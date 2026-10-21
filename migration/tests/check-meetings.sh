@@ -10,10 +10,12 @@ docker run --rm -i --network none --tmpfs /var/lib/postgresql \
     trap "kill $database_pid 2>/dev/null || true" EXIT
     attempt=0
     # pg_isready can succeed against the bootstrap server; require a real connection instead.
-    until psql -U postgres -tAc "select 1" >/dev/null 2>&1; do
+    # The probe uses TCP because the bootstrap server of the entrypoint listens on the socket
+    # only, so the probe can only reach the server that stays up for the check.
+    until psql -h 127.0.0.1 -U postgres -tAc "select 1" >/dev/null 2>&1; do
       attempt=$((attempt+1))
       [ "$attempt" -gt 30 ] && { cat /tmp/postgres-check.log; exit 1; }
       sleep 1
     done
-    psql -U postgres -v ON_ERROR_STOP=1 -f /migrations/tests/run_all.sql
+    psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -f /migrations/tests/run_all.sql
   ' < /dev/null
