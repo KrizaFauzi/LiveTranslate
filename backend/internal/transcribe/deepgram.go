@@ -6,6 +6,7 @@ import (
 	"livetranslate/backend/internal/config"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	msginterfaces "github.com/deepgram/deepgram-go-sdk/v3/pkg/api/listen/v1/websocket/interfaces"
@@ -14,6 +15,26 @@ import (
 )
 
 const writeTimeout = 5 * time.Second
+
+// streamTimeouts bounds the provider calls that can block on a stuck connection.
+type streamTimeouts struct {
+	write    time.Duration
+	finalize time.Duration
+	teardown time.Duration
+}
+
+var defaultTimeouts = streamTimeouts{write: writeTimeout, finalize: writeTimeout, teardown: writeTimeout}
+
+// deepgramClient is the part of the Deepgram SDK client the stream uses. The SDK
+// client holds its connection mutex while writing to the socket, so one stuck
+// write blocks every later call; the interface keeps that behaviour testable
+// without a network.
+type deepgramClient interface {
+	Write(payload []byte) (int, error)
+	Finalize() error
+	Finish()
+	Stop()
+}
 
 // deepgramProvider opens Deepgram live transcription streams.
 type deepgramProvider struct {
@@ -33,19 +54,10 @@ func (p *deepgramProvider) Open(ctx context.Context, sampleRate int) (Stream, er
 		return nil, errors.New("konfigurasi Deepgram tidak valid")
 	}
 	if !client.Connect() {
+		client.Stop()
 		return nil, errors.New("koneksi Deepgram gagal")
 	}
-	stream := &deepgramStream{
-		client:  client,
-		chans:   chans,
-		results: make(chan Result, 64),
-		errors:  make(chan error, 8),
-		done:    make(chan struct{}),
-	}
-	stream.wg.Add(2)
-	go stream.forwardResults()
-	go stream.forwardErrors()
-	return stream, nil
+	return newDeepgramStream(client, chans), nil
 }
 
 // deepgramLanguage reads the transcription language until the config carries it.
@@ -59,18 +71,38 @@ func deepgramLanguage() string {
 
 // deepgramStream is one live Deepgram connection.
 type deepgramStream struct {
-	client  *clientws.WSChannel
-	chans   *deepgramChans
-	results chan Result
-	errors  chan error
-	done    chan struct{}
-	wg      sync.WaitGroup
-	once    sync.Once
+	client   deepgramClient
+	chans    *deepgramChans
+	results  chan Result
+	errors   chan error
+	done     chan struct{}
+	wg       sync.WaitGroup
+	once     sync.Once
+	timeouts streamTimeouts
+	poisoned atomic.Bool
+}
+
+func newDeepgramStream(client deepgramClient, chans *deepgramChans) *deepgramStream {
+	stream := &deepgramStream{
+		client:   client,
+		chans:    chans,
+		results:  make(chan Result, 64),
+		errors:   make(chan error, 8),
+		done:     make(chan struct{}),
+		timeouts: defaultTimeouts,
+	}
+	stream.wg.Add(2)
+	go stream.forwardResults()
+	go stream.forwardErrors()
+	return stream
 }
 
 // Write sends audio bytes to Deepgram without exposing their content.
 func (s *deepgramStream) Write(payload []byte) error {
-	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
+	if s.poisoned.Load() {
+		return errors.New("Deepgram: penulisan gagal")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), s.timeouts.write)
 	defer cancel()
 	written := make(chan error, 1)
 	go func() {
@@ -84,24 +116,62 @@ func (s *deepgramStream) Write(payload []byte) error {
 		}
 		return nil
 	case <-ctx.Done():
+		s.poisoned.Store(true)
 		return errors.New("Deepgram: penulisan gagal")
 	}
 }
 
 // Finalize asks Deepgram to flush the pending transcript.
 func (s *deepgramStream) Finalize() error {
-	return s.client.Finalize()
+	if s.poisoned.Load() {
+		return errors.New("Deepgram: finalisasi dilewati karena koneksi macet")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), s.timeouts.finalize)
+	defer cancel()
+	finalized := make(chan error, 1)
+	go func() {
+		finalized <- s.client.Finalize()
+	}()
+	select {
+	case err := <-finalized:
+		if err != nil {
+			return errors.New("Deepgram: finalisasi gagal")
+		}
+		return nil
+	case <-ctx.Done():
+		s.poisoned.Store(true)
+		return errors.New("Deepgram: finalisasi gagal")
+	}
 }
 
-// Close ends the connection and closes the result and error channels.
+// Close ends the connection and closes the result and error channels. It returns
+// even when the provider connection is stuck.
 func (s *deepgramStream) Close() error {
 	s.once.Do(func() {
-		s.client.Finish()
-		s.client.Stop()
+		s.stopClient()
 		close(s.done)
 		s.wg.Wait()
 	})
 	return nil
+}
+
+// stopClient tears the socket down without waiting for a stuck connection. The
+// SDK keeps its connection mutex while writing, so Stop can wait forever once a
+// write is stuck; the call then continues in the background instead of holding
+// the caller.
+func (s *deepgramStream) stopClient() {
+	ctx, cancel := context.WithTimeout(context.Background(), s.timeouts.teardown)
+	defer cancel()
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		s.client.Finish() // no-op in SDK v3.8.0; Stop does the real teardown
+		s.client.Stop()
+	}()
+	select {
+	case <-stopped:
+	case <-ctx.Done():
+	}
 }
 
 // Results returns the channel of provider results.
