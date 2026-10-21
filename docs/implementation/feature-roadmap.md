@@ -6,7 +6,7 @@
 >
 > **Satu sumber kebenaran:** roadmap ini adalah daftar fitur dan statusnya. Detail desain, plan, dan hasil uji tetap berada pada dokumen khusus (`docs/implementation/`, `docs/superpowers/`, `docs/obsidian-pending/`) dan hanya diringkas di sini.
 
-Terakhir diperbarui: 2026-10-22  
+Terakhir diperbarui: 2026-10-22 (termasuk verifikasi live F4: container nyata dan provider nyata)  
 Sumber arah: implementasi repository, `README.md`, status autentikasi, status Tab Meeting Capture, rencana inisialisasi, dan keputusan pengguna.
 
 ---
@@ -112,7 +112,7 @@ Batas ini berlaku sampai pengguna mengubahnya secara eksplisit.
 | F1 | Identitas dan akun | PERLU VALIDASI | Auth, profile, session, RLS. Live: login/refresh/logout/me lulus; sisa signup happy path (rate limit email project) dan uji Chrome |
 | F2 | Konteks meeting | PERLU VALIDASI | Deteksi URL, `meeting_id`, sinkronisasi offline. Live: resolve/list/detail, idempotensi, race, dan isolasi akun lulus; sisa uji Chrome nyata |
 | F3 | Capture audio | SELESAI LOKAL | Stream audio terikat meeting, izin eksplisit, tanpa penyimpanan audio |
-| F4 | Transkripsi streaming | PERLU VALIDASI | Segmen transkrip partial/final. Implementasi lokal lulus (104/104 test extension, semua paket Go lulus, build lulus); validasi manual Chrome dan streaming live dari browser belum dijalankan |
+| F4 | Transkripsi streaming | PERLU VALIDASI | Segmen transkrip partial/final. Implementasi lokal lulus (104/104 test extension, semua paket Go lulus, build lulus) dan jalur server terbukti live 2026-10-22 (run/chunk/stop/SSE dengan key Deepgram nyata, 3 partial + 1 final dari audio sampel); validasi manual Chrome dan streaming dari browser belum dijalankan |
 | F5 | Terjemahan | TERBLOKIR KEPUTUSAN | Terjemahan real-time per segmen |
 | F6 | Penyimpanan & timeline | TERBLOKIR KEPUTUSAN | Artefak meeting per run |
 | F7 | Assistance AI | TERBLOKIR KEPUTUSAN | Deteksi pertanyaan + jawaban |
@@ -140,7 +140,7 @@ Format tiap fitur: **ID — Nama** · prioritas · status · dependensi · accep
 | A-08 | Mode CLI check Supabase | — | DI LUAR BATAS | Dihapus saat migrasi ke Supabase HTTP API; akses diperiksa lewat alur auth |
 | A-09 | Extension Vite MV3 build | P0 | SELESAI LOKAL | `npm run build` menghasilkan `dist/background.js` module, popup, manifest |
 | A-10 | Popup pemeriksaan backend | P1 | SELESAI LOKAL | Status tampil saat backend hidup dan gagal saat mati |
-| A-11 | Fixture audio non-sensitif untuk check Deepgram | P1 | PERLU VALIDASI | `fixtures/check.wav` ada dan(check) lulus dengan key nyata |
+| A-11 | Fixture audio non-sensitif untuk check Deepgram | P1 | SELESAI LOKAL | `fixtures/check.wav` ada dan(check) lulus dengan key nyata. Berkas diabaikan Git; pada 2026-10-22 dipakai sampel SDK Deepgram (suara manusia, bukan data pengguna) dan `docker compose run --rm backend -check deepgram -audio /app/fixtures/check.wav` menghasilkan `deepgram: LULUS` |
 | A-12 | Kompresi dan garbage collection build | P2 | BELUM DIMULAI | Artefak build reproducible dan kecil |
 
 ### B. Identitas dan akun
@@ -214,14 +214,14 @@ Format tiap fitur: **ID — Nama** · prioritas · status · dependensi · accep
 
 | ID | Fitur | P | Status | Acceptance |
 | --- | --- | --- | --- | --- |
-| E-01 | Deepgram streaming via backend | P0 | PERLU VALIDASI | Key hanya di backend; stream autentik dan punya ownership check. Implementasi dan test lokal lulus (paket `internal/transcribe`, route SSE dengan cek kepemilikan); streaming live dengan key nyata belum dijalankan pada sesi ini |
+| E-01 | Deepgram streaming via backend | P0 | SELESAI LOKAL | Key hanya di backend; stream autentik dan punya ownership check. Terbukti live 2026-10-22 di container nyata: run 201 → 2 chunk (0 → 32.000 → 74.880 byte) → SSE 3 partial + 1 final + `end` → stop 200 `stopped`, dengan key Deepgram nyata; run akun lain 404. Jalur browser tetap pada validasi Chrome (M-07) |
 | E-02 | Segmen partial/final | P0 | SELESAI LOKAL | Segmen punya sequence, timestamp, status; final tidak berubah diam-diam. Test Go broker dan test parser SSE extension lulus |
 | E-03 | Reconnect tanpa duplikasi | P0 | BELUM DIMULAI | Reconnect tidak menggandakan segmen final. Di luar cakupan F4: desain F4 tidak mencakup reconnect otomatis ke Deepgram |
 | E-04 | Cancellation dan timeout | P0 | SELESAI LOKAL | Stream punya batas waktu dan dapat dibatalkan: deadline write provider, anggaran tutup sesi, dan route stop idempoten; test timeout dan idempotensi lulus |
 | E-05 | Error provider tanpa kebocoran | P0 | SELESAI LOKAL | Credential dan body audio tidak masuk log/response; event `error` SSE hanya berisi kode dan pesan generik |
 | E-06 | Pemisahan segmen per meeting | P0 | SELESAI LOKAL | Segmen meeting A tidak masuk meeting B: broker dipetakan per run, dan run dibaca dengan token pemanggil sehingga RLS menyembunyikan run akun lain |
 | E-07 | Model/bahasa dari konfigurasi nyata | P0 | SELESAI LOKAL | `DEEPGRAM_MODEL=nova-2` dan `DEEPGRAM_LANGUAGE=multi`; keduanya diuji terhadap akun nyata. `2-general` dan `2-meeting` ditolak akun, `multi`/`en-US`/`id` diterima |
-| E-08 | Check prerecorded Deepgram | P1 | PERLU VALIDASI | `-check deepgram` lulus dengan fixture dan key nyata. Dijalankan pada task verifikasi akhir F4 |
+| E-08 | Check prerecorded Deepgram | P1 | SELESAI LOKAL | `-check deepgram` lulus dengan fixture dan key nyata: `docker compose run --rm backend -check deepgram -audio /app/fixtures/check.wav` → `deepgram: LULUS` (2026-10-22) |
 | E-09 | Sinkronisasi subtitle real-time | P1 | PERLU VALIDASI | Teks berjalan mengikuti audio: segmen masuk ke popup dari state `chrome.storage.session` dan tampil berurutan. Latensi belum diukur di browser nyata karena tidak ada binary Chrome di lingkungan ini |
 | E-10 | Speaker diarization | P2 | TERBLOKIR KEPUTUSAN | Keputusan DEC-06; label speaker tidak boleh disalahartikan sebagai identitas nyata |
 
@@ -281,7 +281,7 @@ Format tiap fitur: **ID — Nama** · prioritas · status · dependensi · accep
 | I-05 | Panel bantuan AI | P1 | BELUM DIMULAI | Pertanyaan terdeteksi dan jawaban AI terpisah jelas dari transkrip |
 | I-06 | Halaman history meeting | P1 | BELUM DIMULAI | Daftar run milik pengguna |
 | I-07 | Tampilan detail satu meeting | P1 | BELUM DIMULAI | Transkrip, terjemahan, ringkasan, ekspor |
-| I-08 | Kontrol capture | P0 | BELUM DIMULAI | Mulai/stop capture dengan status jelas |
+| I-08 | Kontrol capture | P0 | SELESAI LOKAL | Mulai/stop capture dengan status jelas. Tombol "Mulai merekam"/"Berhenti merekam" ada di popup (`extension/src/App.jsx`) sejak F3; worker menambah run, menangkap tab, dan menutup run saat berhenti, tab ditutup, atau logout (`extension/src/audio-capture.js`), dengan status capture, jumlah chunk, dan total byte di popup. Bukti: 18 test di `extension/src/audio-capture.test.js` dan 6 test di `extension/src/background-runtime.test.js` lulus 2026-10-22, serta endpoint run/chunk/stop terbukti live di container nyata (run 201 → chunk 200 → stop 200 `stopped`). Klik tombol di Chrome nyata tetap bagian dari checklist manual M-07 |
 | I-09 | Bahasa tujuan | P1 | BELUM DIMULAI | Selector bahasa persist per pengguna |
 | I-10 | Empty/error/loading state | P1 | BELUM DIMULAI | Setiap permukaan punya state yang jelas; error tanpa token |
 | I-11 | Aksesibilitas | P1 | BELUM DIMULAI | Focus order, label, `aria-live` pada streaming |
@@ -339,9 +339,9 @@ Format tiap fitur: **ID — Nama** · prioritas · status · dependensi · accep
 | M-04 | Contract test auth | P0 | SELESAI LOKAL | 7/7 lulus |
 | M-05 | Test migrasi PostgreSQL sementara | P0 | SELESAI LOKAL | RLS, grants, idempotensi, identity stabil |
 | M-06 | Fixture URL provider | P0 | SELESAI LOKAL | Fixture bersama frontend/backend |
-| M-07 | Uji manual Chrome + provider nyata | P0 | BELUM DIMULAI | Checklist manual terdokumentasi dan dijalankan |
+| M-07 | Uji manual Chrome + provider nyata | P0 | PERLU VALIDASI | Checklist manual terdokumentasi di `docs/implementation/audio-status.md` bagian "Aktivasi manual (Chrome)"; sisi provider nyata sudah dijalankan 2026-10-22 (`-check deepgram` lulus, streaming live menghasilkan partial dan final), sisi Chrome belum karena lingkungan ini tidak punya binary Chrome |
 | M-08 | Uji live Supabase | P0 | PERLU VALIDASI | Auth, profile, refresh, logout, resolve/list/detail meeting, race paralel, dan isolasi dua akun lulus pada project nyata; signup happy path tertahan rate limit email project |
-| M-09 | Uji live provider berbayar | P1 | BELUM DIMULAI | Dijalankan eksplisit dengan key nyata |
+| M-09 | Uji live provider berbayar | P1 | SELESAI LOKAL | Dijalankan eksplisit dengan key nyata pada 2026-10-22: `-check deepgram` → `deepgram: LULUS`, dan satu streaming live memakai key yang sama menghasilkan 3 partial + 1 final. Sumopod belum diuji karena di luar cakupan F4 |
 | M-10 | Uji race & concurrency | P0 | SELESAI LOKAL | Resolve paralel, response basi, worker restart |
 | M-11 | Uji offline/reconnect | P0 | BELUM DIMULAI | Semua jalur streaming pulih tanpa kehilangan data |
 | M-12 | Uji data besar | P2 | BELUM DIMULAI | Meeting panjang tidak melampaui batas |
@@ -389,12 +389,12 @@ Setiap tabel baru wajib punya: `id` UUID, `user_id` FK, timestamp, unique constr
 | POST | `/api/meetings/resolve` | Bearer | Perlu validasi |
 | GET | `/api/meetings` | Bearer | Perlu validasi |
 | GET | `/api/meetings/{id}` | Bearer | Perlu validasi |
-| POST | `/api/audio/runs` | Bearer | Selesai (F3) |
-| POST | `/api/audio/runs/{id}/chunks` | Bearer | Selesai (F3) |
-| POST | `/api/audio/runs/{id}/stop` | Bearer | Selesai (F3) |
+| POST | `/api/audio/runs` | Bearer | Selesai (F3) — terbukti live 2026-10-22 (201, run `active`) |
+| POST | `/api/audio/runs/{id}/chunks` | Bearer | Selesai (F3) — terbukti live 2026-10-22 (200, akuntansi byte/chunk naik) |
+| POST | `/api/audio/runs/{id}/stop` | Bearer | Selesai (F3) — terbukti live 2026-10-22 (200, `stopped`, idempoten) |
 | POST | `/api/meetings/{id}/segments` | Bearer | Rencana (DEC-05) |
 | GET | `/api/meetings/{id}/segments` | Bearer | Rencana (DEC-05) |
-| GET | `/api/audio/runs/{id}/transcript` | Bearer | Selesai (F4) — SSE, event `segment`/`end`/`error` |
+| GET | `/api/audio/runs/{id}/transcript` | Bearer | Selesai (F4) — SSE, event `segment`/`end`/`error`; terbukti live 2026-10-22 (3 partial + 1 final + `end`) |
 | POST | `/api/transcription/sessions` | Bearer | Tidak dipakai; sesi transkripsi dibuat bersama run capture |
 | WS/SSE | `/api/transcription/stream` | Bearer | Tidak dipakai; stream transkripsi memakai SSE di `/api/audio/runs/{id}/transcript` |
 | POST | `/api/assistant/answer` | Bearer | Rencana (DEC-12) |
@@ -407,7 +407,7 @@ Setiap tabel baru wajib punya: `id` UUID, `user_id` FK, timestamp, unique constr
 Validasi F1 Auth/Supabase nyata  ✓ live 2026-10-21 (sisa signup + Chrome)
   → Validasi F2 Meeting/Chrome nyata ✓ live 2026-10-21 (sisa Chrome)
   → DEC-01 + DEC-05 → F3 Audio Capture ✓ selesai 2026-10-21
-  → F4 Streaming Transcription ✓ selesai lokal 2026-10-22 (sisa validasi Chrome dan streaming live)
+  → F4 Streaming Transcription ✓ selesai lokal 2026-10-22; jalur server terbukti live 2026-10-22 (sisa validasi Chrome)
   → DEC-05 (penyimpanan transkrip) → F6 Storage & timeline
   → DEC-07 + DEC-08 (bahasa & provider) → F5 Translation
   → DEC-12 + DEC-13 (aktivasi & konteks) → F7 Assistant
@@ -466,7 +466,8 @@ Terverifikasi pada 2026-10-21 di workspace ini:
 - Backend container nyata berjalan di `http://localhost:8989` dengan `GET /health` → `{"service":"livetranslate-backend","status":"ok"}`.
 - F3 Audio Capture: migrasi `0003` terpasang live; API run/chunk/stop terbukti live (akuntansi atomik, 409 setelah stop, 401 tanpa token, 404 untuk meeting akun lain); extension 49/49 test dan build menghasilkan `dist/offscreen.html`; audio tidak disimpan di mana pun.
 - F4 Transkripsi Streaming (2026-10-22): `go test ./...` dan `go vet ./...` lulus (paket `internal/transcribe` dan `internal/audio` mencakup provider, broker, backlog, route run/chunk/stop/SSE); `npm test` 104/104 lulus; `npm run build` lulus; `node --test http/auth.test.mjs` 7/7 lulus; `docker compose config --quiet` lulus; `sh migration/tests/check-meetings.sh` lulus. Model `nova-2` dan bahasa `multi` diuji terhadap akun nyata (`2-general` dan `2-meeting` ditolak; `multi`, `en-US`, `id` diterima). Audio dan transkrip tidak ditulis ke database, log, atau file.
-- Belum diuji end-to-end: signup sukses pada project nyata (rate limit email project), capture audio nyata di Chrome (tidak ada binary Chrome di lingkungan), streaming Deepgram dari browser, Sumopod nyata.
+- F4 live (2026-10-22, container nyata + provider nyata): `docker compose up -d --build backend` → container jalan di `http://127.0.0.1:8989`; `GET /health` → `{"service":"livetranslate-backend","status":"ok"}`; `docker compose run --rm backend -check deepgram -audio /app/fixtures/check.wav` → `deepgram: LULUS`; login akun uji nyata → 200 dengan sesi; resolve meeting → 200 dengan `meeting_id`; `POST /api/audio/runs` (`sample_rate` 8000) → 201 run `active`; dua unggah chunk PCM16 (32.000 + 42.880 byte) → 200 dengan akuntansi 0 → 32.000 → 74.880 byte dan 0 → 1 → 2 chunk; `GET /api/audio/runs/{id}/transcript` → 3 event `segment` partial + 1 final + event `end`; `POST .../stop` → 200 `stopped` dengan `ended_at`, chunk setelah stop 409, stop kedua 200, stream run yang sudah stop hanya `end`, akun kedua 404; baris `meeting_runs` di Supabase nyata hanya berisi status dan akuntansi; log container tidak memuat secret, audio, atau teks transkrip.
+- Belum diuji end-to-end: signup sukses pada project nyata (rate limit email project), capture audio nyata di Chrome (tidak ada binary Chrome di lingkungan), streaming Deepgram dari browser (jalur server sudah terbukti live), Sumopod nyata.
 
 ### 11.1 Catatan operasional hasil validasi live
 
@@ -490,3 +491,4 @@ Dokumen status rinci: `docs/implementation/auth-status.md`, `docs/implementation
 | 2026-10-21 | F3 Audio Capture selesai: 4 keputusan pengguna dikunci (tab audio saja, tombol Mulai, tanpa penyimpanan audio, `meeting_run_id` per capture); migrasi 0003 + endpoint run/chunk/stop + dokumen offscreen; DEC-01, DEC-03, DEC-04 ditutup; 12 fitur naik status | Sesi implementasi F3 2026-10-21 |
 | 2026-10-21 | Spec F4 transkripsi live ditulis setelah spike Deepgram: model akun `nova-2` (bukan `2-general`), format wire PCM16 (container webm tidak menghasilkan segmen final), auth streaming lewat header; D-07 turun ke PERLU VALIDASI | Sesi spike dan desain F4 2026-10-21 |
 | 2026-10-22 | F4 Transkripsi Streaming selesai secara lokal: capture PCM16 mono dari `AudioWorklet` dengan frame 100 ms (D-07 naik ke SELESAI LOKAL), backend meneruskan byte ke Deepgram streaming, backlog segmen per run, endpoint SSE `/api/audio/runs/{id}/transcript`, state transkrip di popup. E-02, E-04, E-05, E-06, E-07, I-03, J-01 naik ke SELESAI LOKAL; E-01, E-09 tetap PERLU VALIDASI (belum ada validasi browser/live); E-03 reconnect tetap di luar cakupan F4. Konfigurasi `DEEPGRAM_MODEL=nova-2` dan `DEEPGRAM_LANGUAGE=multi`. Bukti: `go test ./...`, `go vet ./...`, `npm test` 104/104, `npm run build`, contract auth 7/7, `docker compose config --quiet`, `sh migration/tests/check-meetings.sh` | Sesi implementasi F4 2026-10-21 s.d. 2026-10-22 |
+| 2026-10-22 | Verifikasi live F4: container nyata dibangun dan dijalankan, `-check deepgram` lulus dengan key nyata, alur login → resolve → run → chunk → SSE → stop terbukti live (3 partial + 1 final dari audio sampel SDK), isolasi akun 404, tidak ada audio/transkrip di database, log, atau file. I-08 (kontrol capture) naik dari BELUM DIMULAI ke SELESAI LOKAL karena tombol popup dan worker sudah ada sejak F3; E-01, E-08, A-11, M-09 naik ke SELESAI LOKAL; M-07 turun ke PERLU VALIDASI karena hanya sisi Chrome yang belum dijalankan. F4 tetap PERLU VALIDASI (validasi Chrome) | Sesi verifikasi akhir F4 2026-10-22 |

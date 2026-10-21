@@ -1,6 +1,6 @@
 # Audio Capture Meeting — status implementasi
 
-Tanggal: 2026-10-21. Fitur F3 selesai secara lokal dan terverifikasi live di sisi backend/database. Fitur F4 (transkripsi streaming) selesai secara lokal pada 2026-10-22; hasil verifikasinya tercatat di bagian "Verifikasi F4". Pemeriksaan manual Chrome belum dijalankan karena lingkungan ini tidak memiliki binary Chrome.
+Tanggal: 2026-10-21. Fitur F3 selesai secara lokal dan terverifikasi live di sisi backend/database. Fitur F4 (transkripsi streaming) selesai secara lokal pada 2026-10-22 dan jalur server-nya terverifikasi live pada 2026-10-22 terhadap container dan akun Deepgram nyata; hasil verifikasinya tercatat di bagian "Verifikasi F4" dan "Verifikasi live F4". Pemeriksaan manual Chrome belum dijalankan karena lingkungan ini tidak memiliki binary Chrome.
 
 ## Keputusan yang dipakai
 
@@ -104,7 +104,56 @@ Perintah berikut dijalankan di workspace ini pada 2026-10-22:
 | Streaming provider end-to-end dari browser | — | BELUM DIUJI | Memerlukan capture nyata di Chrome dan backend live; verifikasi manual dicatat di bagian "Aktivasi manual" |
 | Capture + transkrip di Chrome nyata | — | BELUM DIUJI | Tidak ada binary Chrome di lingkungan ini |
 | Penyimpanan audio dan transkrip | Pemeriksaan kode dan skema | LULUS | Tidak ada tabel atau kolom transkrip; `meeting_runs` hanya menyimpan status dan akuntansi byte/chunk; backlog segmen hanya di memori backend |
-| Streaming Deepgram nyata dengan key | — | BELUM DIUJI | Berjalan pada task verifikasi akhir (F4 live) memakai fixture audio contoh, bukan data pengguna |
+| Streaming Deepgram nyata dengan key | `docker compose run --rm backend -check deepgram -audio /app/fixtures/check.wav` | LULUS | Account nyata Deepgram, key dari `.env`; `deepgram: LULUS`. Fixture berupa sampel SDK, bukan data pengguna |
+
+## Verifikasi live F4 — 2026-10-22 (container nyata, provider nyata)
+
+Semua perintah di bawah dijalankan di workspace ini pada 2026-10-22 terhadap container nyata `livetranslate-init-backend-1` (image dibangun dari `backend/Dockerfile`, host port 8989), project Supabase nyata, dan akun Deepgram nyata. Audio yang dipakai adalah sampel SDK Deepgram (`deepgram-go-sdk/v3@v3.8.0/examples/speech-to-text/websocket/replay/testing.wav`, 4,68 detik suara manusia), bukan data pengguna. Fixture disalin ke `fixtures/check.wav`; berkas itu diabaikan Git.
+
+### Suite lokal
+
+| Pemeriksaan | Perintah | Hasil | Bukti |
+| --- | --- | --- | --- |
+| Test backend | `cd backend && go test -race -count=1 ./...` | LULUS | Semua paket `ok` (`cmd/server`, `internal/audio`, `internal/auth`, `internal/health`, `internal/meeting`, `internal/sumopod`, `internal/transcribe`), 0 gagal |
+| Vet backend | `cd backend && go vet ./...` | LULUS | Tanpa temuan |
+| Test extension | `cd extension && npm test` | LULUS | 104/104 lulus, 0 gagal |
+| Build extension | `cd extension && npm run build` | LULUS | Vite 7.3.7 → `dist/offscreen.html`, `dist/background.js`, popup, manifest |
+| Contract test auth | `node --test --test-isolation=none http/auth.test.mjs` | LULUS | 7/7 lulus |
+| Compose | `docker compose config --quiet` | LULUS | Tanpa error konfigurasi |
+| Harness migrasi | `sh migration/tests/check-meetings.sh` | LULUS | `meeting run accounting and RLS checks passed` |
+
+### Backend nyata dan provider nyata
+
+| Pemeriksaan | Perintah | Hasil | Bukti/batas |
+| --- | --- | --- | --- |
+| Build dan jalan container | `docker compose up -d --build backend` | LULUS | Image `livetranslate-init-backend`, container `Up`, port `127.0.0.1:8989->8080/tcp` |
+| Health | `curl --fail http://127.0.0.1:8989/health` | LULUS | HTTP 200 `{"service":"livetranslate-backend","status":"ok"}` |
+| Check provider Deepgram | `set -a; . ./.env; set +a` lalu `docker compose run --rm backend -check deepgram -audio /app/fixtures/check.wav` | LULUS | `deepgram: LULUS` (akun nyata, key nyata; satu panggilan berbayar yang diizinkan) |
+| Login akun uji | `curl -X POST http://127.0.0.1:8989/api/auth/login -d '{"email":"livetranslate.e2e@livetranslate.invalid",...}'` | LULUS | HTTP 200, `session.access_token` dan `expires_at` kembali; kredensial tidak dicetak |
+| Resolve meeting | `curl -X POST http://127.0.0.1:8989/api/meetings/resolve -d '{"canonical_url":"https://meet.google.com/abc-defg-hij"}'` | LULUS | HTTP 200, `meeting.id` = `b1f098d8-31b6-4f94-9a4c-c82a1192c703` |
+| Buat run capture | `curl -X POST http://127.0.0.1:8989/api/audio/runs -d '{"meeting_id":"b1f098d8-31b6-4f94-9a4c-c82a1192c703","sample_rate":8000}'` | LULUS | HTTP 201, run `4d581221-2f05-4db9-863e-5d011350ebd5` berstatus `active`; sesi Deepgram terbuka |
+| Upload chunk 1 (32.000 byte PCM16 8 kHz) | `curl -X POST http://127.0.0.1:8989/api/audio/runs/{id}/chunks --data-binary @chunk1.raw` | LULUS | HTTP 200, `bytes_received` 0 → 32.000, `chunks_received` 0 → 1 |
+| Upload chunk 2 (42.880 byte) | `curl -X POST http://127.0.0.1:8989/api/audio/runs/{id}/chunks --data-binary @chunk2.raw` | LULUS | HTTP 200, `bytes_received` 32.000 → 74.880, `chunks_received` 1 → 2 |
+| Stream transkrip SSE | `curl -N http://127.0.0.1:8989/api/audio/runs/{id}/transcript` | LULUS | Events `segment` (3 partial + 1 final, `seq` 1–4, `language` `en`) lalu `end`; teks hasil pengenalan suara pada sampel SDK |
+| Stop run | `curl -X POST http://127.0.0.1:8989/api/audio/runs/{id}/stop` | LULUS | HTTP 200, `status` `stopped`, `ended_at` terisi, `bytes_received` 74.880, `chunks_received` 2 |
+| Chunk setelah stop | `curl -X POST .../chunks` | LULUS | HTTP 409 `run_closed` |
+| Stop kedua kali | `curl -X POST .../stop` | LULUS | HTTP 200, run tetap `stopped` (idempoten) |
+| Stream transkrip run yang sudah stop | `curl -N .../transcript` | LULUS | Hanya event `end`, tanpa error |
+| Isolasi akun di run live | `curl -H "Authorization: Bearer <token akun kedua>" .../transcript` | LULUS | HTTP 404 `not_found`; run akun lain tidak terlihat |
+| Baris run di Supabase nyata | `GET {SUPABASE_URL}/rest/v1/meeting_runs?id=eq.{run_id}` | LULUS | `stopped`, `bytes_received` 74.880, `chunks_received` 2; tidak ada kolom audio atau transkrip |
+| Log container | `docker compose logs backend` | LULUS | Hanya `LiveTranslate backend mendengarkan :8080`; tidak ada secret, audio, atau teks transkrip |
+| Capture + transkrip dari Chrome nyata | — | BELUM DIUJI | Tidak ada binary Chrome di lingkungan ini; `AudioWorklet`, `tabCapture`, dan popup belum dijalankan di browser |
+| Streaming transkrip dari browser | — | BELUM DIUJI | Jalur SSE dan popup sudah lulus di test lokal; end-to-end browser tetap perlu validasi manual |
+
+### Cara mereproduksi bagian audio
+
+```bash
+# Fixture pemeriksaan provider (diabaikan Git, disalin dari sampel SDK Deepgram)
+cp "$(go env GOMODCACHE)/github.com/deepgram/deepgram-go-sdk/v3@v3.8.0/examples/speech-to-text/websocket/replay/testing.wav" fixtures/check.wav
+
+# PCM16 mono 8 kHz untuk unggah chunk (format linear16 yang dipakai backend)
+ffmpeg -y -i fixtures/check.wav -f s16le -acodec pcm_s16le -ar 8000 -ac 1 /tmp/pcm16_8k.raw
+```
 
 ## Aktivasi manual (Chrome)
 
