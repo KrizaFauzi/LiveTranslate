@@ -26,6 +26,11 @@ const (
 	// orphanRun is a run of an earlier backend instance: the row is active but
 	// no transcription session is left for it.
 	orphanRun = "dddddddd-2222-4333-8444-555555555555"
+	// stoppedRun is a run that is already over: the row is stopped and no
+	// transcription session is left for it.
+	stoppedRun = "eeeeeeee-2222-4333-8444-555555555555"
+	// unknownRun is a run that does not exist.
+	unknownRun = "ffffffff-2222-4333-8444-555555555555"
 )
 
 func jsonResponse(status int, value any) *http.Response {
@@ -204,6 +209,14 @@ func (unconfiguredProvider) Configured() bool { return false }
 // The provider decides whether the transcription session of a run can be opened.
 func newHandler(t *testing.T, provider transcribe.Provider) (http.Handler, *fakeDB) {
 	t.Helper()
+	h, _, db := newHandlerWithBroker(t, provider)
+	return h, db
+}
+
+// newHandlerWithBroker also returns the broker, so a test can open the live
+// session of a run.
+func newHandlerWithBroker(t *testing.T, provider transcribe.Provider) (http.Handler, *transcribe.Broker, *fakeDB) {
+	t.Helper()
 	db := &fakeDB{}
 	bytesSeen := int64(0)
 	chunksSeen := 0
@@ -251,16 +264,24 @@ func newHandler(t *testing.T, provider transcribe.Provider) (http.Handler, *fake
 			if r.Header.Get("Authorization") != "Bearer owner" {
 				return jsonResponse(200, []map[string]any{}), nil
 			}
-			if r.URL.Query().Get("id") == "eq."+orphanRun {
+			switch r.URL.Query().Get("id") {
+			case "eq." + orphanRun:
 				return jsonResponse(200, []map[string]any{{
 					"id": orphanRun, "user_id": owner, "meeting_id": meeting, "status": "active",
 					"bytes_received": 0, "chunks_received": 0, "started_at": "2026-10-21T00:00:00Z", "ended_at": nil,
 				}}), nil
+			case "eq." + stoppedRun:
+				return jsonResponse(200, []map[string]any{{
+					"id": stoppedRun, "user_id": owner, "meeting_id": meeting, "status": "stopped",
+					"bytes_received": 0, "chunks_received": 0, "started_at": "2026-10-21T00:00:00Z", "ended_at": "2026-10-21T00:01:00Z",
+				}}), nil
+			case "eq." + runID:
+				return jsonResponse(200, []map[string]any{{
+					"id": runID, "user_id": owner, "meeting_id": meeting, "status": runStatus,
+					"bytes_received": bytesSeen, "chunks_received": chunksSeen, "started_at": "2026-10-21T00:00:00Z", "ended_at": nil,
+				}}), nil
 			}
-			return jsonResponse(200, []map[string]any{{
-				"id": runID, "user_id": owner, "meeting_id": meeting, "status": runStatus,
-				"bytes_received": bytesSeen, "chunks_received": chunksSeen, "started_at": "2026-10-21T00:00:00Z", "ended_at": nil,
-			}}), nil
+			return jsonResponse(200, []map[string]any{}), nil
 		case r.URL.Path == "/rest/v1/rpc/append_audio_chunk":
 			var body struct {
 				RunUUID    string `json:"run_uuid"`
@@ -301,7 +322,7 @@ func newHandler(t *testing.T, provider transcribe.Provider) (http.Handler, *fake
 	})}
 	broker := transcribe.NewBroker(config.Config{}, provider)
 	h := NewHandler(config.Config{SupabaseURL: "https://project.supabase.co", SupabaseKey: "sb_publishable_test"}, client, broker)
-	return h, db
+	return h, broker, db
 }
 
 func call(t *testing.T, h http.Handler, method, path, body, token, contentType string) *httptest.ResponseRecorder {

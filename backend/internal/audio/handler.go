@@ -87,6 +87,8 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.chunk(w, r, strings.TrimSuffix(runPath, "/chunks"))
 	case strings.HasSuffix(runPath, "/stop") && r.Method == "POST":
 		h.stop(w, r, strings.TrimSuffix(runPath, "/stop"))
+	case strings.HasSuffix(runPath, "/transcript") && r.Method == "GET":
+		h.transcript(w, r, strings.TrimSuffix(runPath, "/transcript"))
 	default:
 		writeFailure(w, &failure{404, "not_found", "Endpoint tidak tersedia."})
 	}
