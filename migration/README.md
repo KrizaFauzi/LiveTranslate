@@ -28,3 +28,19 @@ Backend mengambil profile dengan publishable/legacy anon key dan JWT pengguna, s
 `0000_profiles.sql` dan `meta/_journal.json` dipertahankan sebagai riwayat migrasi lama. Jangan jalankan `0000` untuk setup baru; gunakan `0001` saja. Role livetranslate_runtime yang pernah dibuat dibiarkan, tetapi tidak lagi dipakai aplikasi. Tidak ada tabel atau data akun yang dihapus oleh perpindahan ini.
 
 Untuk perubahan database berikutnya, simpan SQL baru bernomor urut di folder ini, review, lalu terapkan secara eksplisit melalui SQL Editor.
+
+## Meeting berbasis link
+
+Setelah `0001`, jalankan [0002_meeting_sessions.sql](0002_meeting_sessions.sql) melalui SQL Editor project yang sama. Migration ini tidak dijalankan otomatis oleh server. Tabel `meeting_sessions` menyimpan satu sesi permanen per pengguna dan identitas ruang. `meeting_key` serta `canonical_url` merupakan generated columns; query/passcode tidak disimpan. Unique constraint `(user_id, meeting_key)` mencegah duplikasi antar tab dan request paralel.
+
+RLS mengizinkan pengguna membaca dan membuat sesi miliknya. Grants INSERT hanya mencakup identitas provider dan pemilik; UPDATE/DELETE tidak diberikan. Backend memakai JWT pengguna dan publishable key. Tidak ada tabel history LLM pada fitur ini; `meeting_sessions.id` menjadi kontrak pengenal downstream.
+
+Tes lokal migrasi/RLS dapat dijalankan dengan `sh migration/tests/check-meetings.sh` dari root. Docker memakai image `postgres:18-alpine`, tanpa jaringan dan tanpa port host, serta menghapus container setelah tes. Tes tidak membaca `.env` atau mengakses Supabase. Image harus tersedia lokal atau dapat diunduh Docker terlebih dahulu. Harness SQL di `migration/tests/` hanya untuk container kosong, bukan SQL Editor Supabase.
+
+## Run capture audio
+
+Setelah `0002`, jalankan [0003_meeting_runs.sql](0003_meeting_runs.sql) melalui SQL Editor project yang sama. Tabel `meeting_runs` menyimpan metadata satu sesi capture: id, user_id, meeting_id, status, bytes_received, chunks_received, started_at, dan ended_at. Audio tidak pernah disimpan; migration ini hanya mencatat how much data mengalir.
+
+`meeting_key` tidak ada di tabel ini: run selalu terikat `meeting_id` milik pengguna yang sama. RLS mengizinkan SELECT, INSERT, dan UPDATE untuk baris sendiri. Fungsi `append_audio_chunk` dan `stop_audio_run` dipakai backend untuk penjumlahan byte/chunk yang atomik dan penutupan run yang idempoten; keduanya `SECURITY INVOKER`, jadi hak akses dan RLS role pemanggil tetap berlaku, dan `anon` tidak diberi EXECUTE.
+
+Harness lokal di `migration/tests/meeting_runs.sql` menguji terpasangnya migration dua kali, akuntansi byte dan chunk, idempotensi stop, penolakan chunk setelah run ditutup, isolasi akun lain, dan penolakan akses `anon`. Jalankan bersama harness sesi meeting lewat `sh migration/tests/check-meetings.sh`.
