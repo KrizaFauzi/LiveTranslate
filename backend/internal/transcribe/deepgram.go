@@ -1,0 +1,226 @@
+package transcribe
+
+import (
+	"context"
+	"errors"
+	"livetranslate/backend/internal/config"
+	"os"
+	"sync"
+	"time"
+
+	msginterfaces "github.com/deepgram/deepgram-go-sdk/v3/pkg/api/listen/v1/websocket/interfaces"
+	clientinterfaces "github.com/deepgram/deepgram-go-sdk/v3/pkg/client/interfaces"
+	clientws "github.com/deepgram/deepgram-go-sdk/v3/pkg/client/listen/v1/websocket"
+)
+
+const writeTimeout = 5 * time.Second
+
+// deepgramProvider opens Deepgram live transcription streams.
+type deepgramProvider struct {
+	cfg config.Config
+}
+
+func newDeepgramProvider(cfg config.Config) Provider {
+	return &deepgramProvider{cfg: cfg}
+}
+
+// Open connects to the Deepgram live API and starts forwarding provider messages.
+func (p *deepgramProvider) Open(ctx context.Context, sampleRate int) (Stream, error) {
+	chans := newDeepgramChans()
+	options := liveOptions(p.cfg.DeepgramModel, deepgramLanguage(), sampleRate)
+	client, err := clientws.NewUsingChan(ctx, p.cfg.DeepgramKey, &clientinterfaces.ClientOptions{}, options, chans)
+	if err != nil || client == nil {
+		return nil, errors.New("konfigurasi Deepgram tidak valid")
+	}
+	if !client.Connect() {
+		return nil, errors.New("koneksi Deepgram gagal")
+	}
+	stream := &deepgramStream{
+		client:  client,
+		chans:   chans,
+		results: make(chan Result, 64),
+		errors:  make(chan error, 8),
+		done:    make(chan struct{}),
+	}
+	stream.wg.Add(2)
+	go stream.forwardResults()
+	go stream.forwardErrors()
+	return stream, nil
+}
+
+// deepgramLanguage reads the transcription language until the config carries it.
+func deepgramLanguage() string {
+	language := os.Getenv("DEEPGRAM_LANGUAGE")
+	if language == "" {
+		return "multi"
+	}
+	return language
+}
+
+// deepgramStream is one live Deepgram connection.
+type deepgramStream struct {
+	client  *clientws.WSChannel
+	chans   *deepgramChans
+	results chan Result
+	errors  chan error
+	done    chan struct{}
+	wg      sync.WaitGroup
+	once    sync.Once
+}
+
+// Write sends audio bytes to Deepgram without exposing their content.
+func (s *deepgramStream) Write(payload []byte) error {
+	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
+	defer cancel()
+	written := make(chan error, 1)
+	go func() {
+		_, err := s.client.Write(payload)
+		written <- err
+	}()
+	select {
+	case err := <-written:
+		if err != nil {
+			return errors.New("Deepgram: penulisan gagal")
+		}
+		return nil
+	case <-ctx.Done():
+		return errors.New("Deepgram: penulisan gagal")
+	}
+}
+
+// Finalize asks Deepgram to flush the pending transcript.
+func (s *deepgramStream) Finalize() error {
+	return s.client.Finalize()
+}
+
+// Close ends the connection and closes the result and error channels.
+func (s *deepgramStream) Close() error {
+	s.once.Do(func() {
+		s.client.Finish()
+		s.client.Stop()
+		close(s.done)
+		s.wg.Wait()
+	})
+	return nil
+}
+
+// Results returns the channel of provider results.
+func (s *deepgramStream) Results() <-chan Result {
+	return s.results
+}
+
+// Errors returns the channel of provider failures.
+func (s *deepgramStream) Errors() <-chan error {
+	return s.errors
+}
+
+func (s *deepgramStream) forwardResults() {
+	defer s.wg.Done()
+	defer close(s.results)
+	messages := *s.chans.GetMessage()[0]
+	for {
+		select {
+		case message, ok := <-messages:
+			if !ok {
+				return
+			}
+			select {
+			case s.results <- toResult(message):
+			case <-s.done:
+				return
+			}
+		case <-s.done:
+			return
+		}
+	}
+}
+
+func (s *deepgramStream) forwardErrors() {
+	defer s.wg.Done()
+	defer close(s.errors)
+	failures := *s.chans.GetError()[0]
+	for {
+		select {
+		case _, ok := <-failures:
+			if !ok {
+				return
+			}
+			select {
+			case s.errors <- errors.New("transkripsi Deepgram gagal"):
+			case <-s.done:
+				return
+			}
+		case <-s.done:
+			return
+		}
+	}
+}
+
+func liveOptions(model, language string, sampleRate int) *clientinterfaces.LiveTranscriptionOptions {
+	return &clientinterfaces.LiveTranscriptionOptions{
+		Model:          model,
+		Language:       language,
+		Encoding:       "linear16",
+		SampleRate:     sampleRate,
+		InterimResults: true,
+		Punctuate:      true,
+		SmartFormat:    true,
+	}
+}
+
+func toResult(message *msginterfaces.MessageResponse) Result {
+	result := Result{IsFinal: message.IsFinal, Start: message.Start, Duration: message.Duration}
+	if len(message.Channel.Alternatives) > 0 {
+		result.Text = message.Channel.Alternatives[0].Transcript
+		if len(message.Channel.Alternatives[0].Languages) > 0 {
+			result.Language = message.Channel.Alternatives[0].Languages[0]
+		}
+	}
+	return result
+}
+
+// deepgramChans receives provider messages. The SDK default handler prints transcripts
+// to stdout and drains the message channel, so this handler keeps them for the stream.
+type deepgramChans struct {
+	messages chan *msginterfaces.MessageResponse
+	failures chan *msginterfaces.ErrorResponse
+}
+
+func newDeepgramChans() *deepgramChans {
+	return &deepgramChans{
+		messages: make(chan *msginterfaces.MessageResponse, 64),
+		failures: make(chan *msginterfaces.ErrorResponse, 8),
+	}
+}
+
+func (c *deepgramChans) GetOpen() []*chan *msginterfaces.OpenResponse {
+	return nil
+}
+
+func (c *deepgramChans) GetMessage() []*chan *msginterfaces.MessageResponse {
+	return []*chan *msginterfaces.MessageResponse{&c.messages}
+}
+
+func (c *deepgramChans) GetMetadata() []*chan *msginterfaces.MetadataResponse {
+	return nil
+}
+
+func (c *deepgramChans) GetSpeechStarted() []*chan *msginterfaces.SpeechStartedResponse {
+	return nil
+}
+
+func (c *deepgramChans) GetUtteranceEnd() []*chan *msginterfaces.UtteranceEndResponse {
+	return nil
+}
+
+func (c *deepgramChans) GetClose() []*chan *msginterfaces.CloseResponse {
+	return nil
+}
+
+func (c *deepgramChans) GetError() []*chan *msginterfaces.ErrorResponse {
+	return []*chan *msginterfaces.ErrorResponse{&c.failures}
+}
+
+func (c *deepgramChans) GetUnhandled() []*chan *[]byte {
+	return nil
+}
