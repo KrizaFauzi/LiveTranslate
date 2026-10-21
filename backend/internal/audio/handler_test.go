@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type transportFunc func(*http.Request) (*http.Response, error)
@@ -32,14 +33,54 @@ func jsonResponse(status int, value any) *http.Response {
 	return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(b)))}
 }
 
+// fakeDB is the state of the in-memory Data API. The tests use it to observe
+// the calls of the handler and to arm a slow or failing bookkeeping.
+type fakeDB struct {
+	mu          sync.Mutex
+	paths       []string
+	patchStatus string
+	stopFails   bool
+	stopDelay   time.Duration
+}
+
+// lastPatchStatus returns the status of the last PATCH of the Data API.
+func (db *fakeDB) lastPatchStatus() string {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	return db.patchStatus
+}
+
+// calls returns the recorded calls of the Data API.
+func (db *fakeDB) calls() []string {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	return append([]string(nil), db.paths...)
+}
+
+// failStop makes the stop bookkeeping fail.
+func (db *fakeDB) failStop() {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	db.stopFails = true
+}
+
+// slowStop delays the stop bookkeeping.
+func (db *fakeDB) slowStop(delay time.Duration) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	db.stopDelay = delay
+}
+
 // fakeStream is a provider stream that accepts every audio chunk and publishes
 // one final segment when the session asks for the pending transcript.
 type fakeStream struct {
-	mu      sync.Mutex
-	writes  [][]byte
-	closed  bool
-	results chan transcribe.Result
-	errors  chan error
+	mu            sync.Mutex
+	writes        [][]byte
+	closed        bool
+	ctx           context.Context
+	finalizeDelay time.Duration
+	results       chan transcribe.Result
+	errors        chan error
 }
 
 func newFakeStream() *fakeStream {
@@ -55,6 +96,9 @@ func (s *fakeStream) Write(payload []byte) error {
 
 // Finalize publishes the pending transcript so the session flush does not wait.
 func (s *fakeStream) Finalize() error {
+	if delay := s.finalizeDelay; delay > 0 {
+		time.Sleep(delay)
+	}
 	select {
 	case s.results <- transcribe.Result{Text: "selamat pagi", IsFinal: true}:
 	default:
@@ -87,15 +131,31 @@ func (s *fakeStream) isClosed() bool {
 	return s.closed
 }
 
+// setContext keeps the context that the provider received, so the test can
+// check that the context of the session outlives the request.
+func (s *fakeStream) setContext(ctx context.Context) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ctx = ctx
+}
+
+// context returns the context that the provider received.
+func (s *fakeStream) context() context.Context {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ctx
+}
+
 // workingProvider opens a stream that accepts every audio chunk.
 type workingProvider struct {
 	stream *fakeStream
 }
 
-func (p workingProvider) Open(context.Context, int) (transcribe.Stream, error) {
+func (p workingProvider) Open(ctx context.Context, _ int) (transcribe.Stream, error) {
 	if p.stream == nil {
 		return newFakeStream(), nil
 	}
+	p.stream.setContext(ctx)
 	return p.stream, nil
 }
 
@@ -118,17 +178,16 @@ func (unconfiguredProvider) Configured() bool { return false }
 
 // newHandler wires the handler to an in-memory Data API that mimics the RLS and function behaviour.
 // The provider decides whether the transcription session of a run can be opened.
-func newHandler(t *testing.T, provider transcribe.Provider) (http.Handler, *[]string) {
+func newHandler(t *testing.T, provider transcribe.Provider) (http.Handler, *fakeDB) {
 	t.Helper()
-	var mu sync.Mutex
+	db := &fakeDB{}
 	bytesSeen := int64(0)
 	chunksSeen := 0
 	runStatus := "active"
-	paths := []string{}
 	client := &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		paths = append(paths, r.Method+" "+r.URL.Path)
+		db.mu.Lock()
+		defer db.mu.Unlock()
+		db.paths = append(db.paths, r.Method+" "+r.URL.Path)
 		switch {
 		case r.URL.Path == "/auth/v1/user":
 			switch r.Header.Get("Authorization") {
@@ -152,6 +211,7 @@ func newHandler(t *testing.T, provider transcribe.Provider) (http.Handler, *[]st
 		case r.URL.Path == "/rest/v1/meeting_runs" && r.Method == "PATCH":
 			var body map[string]string
 			_ = json.NewDecoder(r.Body).Decode(&body)
+			db.patchStatus = body["status"]
 			runStatus = body["status"]
 			return jsonResponse(200, []map[string]any{{
 				"id": runID, "user_id": owner, "meeting_id": meeting, "status": runStatus,
@@ -177,7 +237,7 @@ func newHandler(t *testing.T, provider transcribe.Provider) (http.Handler, *[]st
 				ChunkBytes int    `json:"chunk_bytes"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
-			if runStatus != "active" {
+			if r.Header.Get("Authorization") != "Bearer owner" || runStatus != "active" {
 				return jsonResponse(200, []map[string]any{}), nil
 			}
 			bytesSeen += int64(body.ChunkBytes)
@@ -187,6 +247,15 @@ func newHandler(t *testing.T, provider transcribe.Provider) (http.Handler, *[]st
 				"bytes_received": bytesSeen, "chunks_received": chunksSeen, "started_at": "2026-10-21T00:00:00Z", "ended_at": nil,
 			}}), nil
 		case r.URL.Path == "/rest/v1/rpc/stop_audio_run":
+			if r.Header.Get("Authorization") != "Bearer owner" {
+				return jsonResponse(200, []map[string]any{}), nil
+			}
+			if db.stopDelay > 0 {
+				time.Sleep(db.stopDelay)
+			}
+			if db.stopFails {
+				return jsonResponse(500, map[string]string{"message": "bookkeeping gagal"}), nil
+			}
 			if runStatus == "active" {
 				runStatus = "stopped"
 				return jsonResponse(200, []map[string]any{{
@@ -200,7 +269,7 @@ func newHandler(t *testing.T, provider transcribe.Provider) (http.Handler, *[]st
 	})}
 	broker := transcribe.NewBroker(config.Config{}, provider)
 	h := NewHandler(config.Config{SupabaseURL: "https://project.supabase.co", SupabaseKey: "sb_publishable_test"}, client, broker)
-	return h, &paths
+	return h, db
 }
 
 func call(t *testing.T, h http.Handler, method, path, body, token, contentType string) *httptest.ResponseRecorder {
@@ -247,7 +316,7 @@ func TestRunLifecycle(t *testing.T) {
 }
 
 func TestRunRequiresSampleRateAndProvider(t *testing.T) {
-	h, paths := newHandler(t, failingProvider{})
+	h, db := newHandler(t, failingProvider{})
 	if w := call(t, h, "POST", "/api/audio/runs", `{"meeting_id":"`+meeting+`"}`, "owner", "application/json"); w.Code != 400 {
 		t.Fatalf("missing sample rate: %d %s", w.Code, w.Body.String())
 	}
@@ -259,13 +328,16 @@ func TestRunRequiresSampleRateAndProvider(t *testing.T) {
 		t.Fatalf("unexpected error code: %s", failed.Body.String())
 	}
 	marked := false
-	for _, path := range *paths {
+	for _, path := range db.calls() {
 		if path == "PATCH /rest/v1/meeting_runs" {
 			marked = true
 		}
 	}
 	if !marked {
-		t.Fatalf("the failed run was not marked failed: %v", *paths)
+		t.Fatalf("the failed run was not marked failed: %v", db.calls())
+	}
+	if status := db.lastPatchStatus(); status != "failed" {
+		t.Fatalf("unexpected patched status: %q", status)
 	}
 }
 
@@ -284,7 +356,7 @@ func TestRunRejectsInvalidSampleRate(t *testing.T) {
 }
 
 func TestRunWithoutProviderConfigurationCreatesNoRow(t *testing.T) {
-	h, paths := newHandler(t, unconfiguredProvider{})
+	h, db := newHandler(t, unconfiguredProvider{})
 	w := call(t, h, "POST", "/api/audio/runs", `{"meeting_id":"`+meeting+`","sample_rate":48000}`, "owner", "application/json")
 	if w.Code != 503 {
 		t.Fatalf("unconfigured provider: %d %s", w.Code, w.Body.String())
@@ -292,10 +364,34 @@ func TestRunWithoutProviderConfigurationCreatesNoRow(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "deepgram_config") {
 		t.Fatalf("unexpected error code: %s", w.Body.String())
 	}
-	for _, path := range *paths {
+	for _, path := range db.calls() {
 		if path == "POST /rest/v1/meeting_runs" {
-			t.Fatalf("the run row was created: %v", *paths)
+			t.Fatalf("the run row was created: %v", db.calls())
 		}
+	}
+}
+
+func TestSessionContextOutlivesTheRunRequest(t *testing.T) {
+	stream := newFakeStream()
+	h, _ := newHandler(t, workingProvider{stream: stream})
+	if w := call(t, h, "POST", "/api/audio/runs", `{"meeting_id":"`+meeting+`","sample_rate":48000}`, "owner", "application/json"); w.Code != 201 {
+		t.Fatalf("start: %d %s", w.Code, w.Body.String())
+	}
+	sessionCtx := stream.context()
+	if sessionCtx == nil {
+		t.Fatal("the provider did not receive a context")
+	}
+	if err := sessionCtx.Err(); err != nil {
+		t.Fatalf("the session context died together with the request: %v", err)
+	}
+	if w := call(t, h, "POST", "/api/audio/runs/"+runID+"/chunks", "audio", "owner", "application/octet-stream"); w.Code != 200 {
+		t.Fatalf("chunk: %d %s", w.Code, w.Body.String())
+	}
+	if w := call(t, h, "POST", "/api/audio/runs/"+runID+"/stop", "", "owner", "application/json"); w.Code != 200 {
+		t.Fatalf("stop: %d %s", w.Code, w.Body.String())
+	}
+	if err := sessionCtx.Err(); err == nil {
+		t.Fatal("the session context outlived the session")
 	}
 }
 
@@ -343,6 +439,65 @@ func TestStopIsIdempotentAndRejectsLateChunks(t *testing.T) {
 	}
 	if w := call(t, h, "POST", "/api/audio/runs/"+runID+"/stop", "", "other", "application/json"); w.Code != 404 {
 		t.Fatalf("foreign stop: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestStopOfAnotherAccountDoesNotCloseTheSession(t *testing.T) {
+	stream := newFakeStream()
+	h, _ := newHandler(t, workingProvider{stream: stream})
+	if w := call(t, h, "POST", "/api/audio/runs", `{"meeting_id":"`+meeting+`","sample_rate":48000}`, "owner", "application/json"); w.Code != 201 {
+		t.Fatalf("start: %d %s", w.Code, w.Body.String())
+	}
+	w := call(t, h, "POST", "/api/audio/runs/"+runID+"/stop", "", "other", "application/json")
+	if w.Code != 404 {
+		t.Fatalf("foreign stop: %d %s", w.Code, w.Body.String())
+	}
+	if stream.isClosed() {
+		t.Fatal("the stop of another account closed the session")
+	}
+}
+
+func TestStopRemovesTheSessionWhenTheBookkeepingFails(t *testing.T) {
+	stream := newFakeStream()
+	h, db := newHandler(t, workingProvider{stream: stream})
+	if w := call(t, h, "POST", "/api/audio/runs", `{"meeting_id":"`+meeting+`","sample_rate":48000}`, "owner", "application/json"); w.Code != 201 {
+		t.Fatalf("start: %d %s", w.Code, w.Body.String())
+	}
+	db.failStop()
+	w := call(t, h, "POST", "/api/audio/runs/"+runID+"/stop", "", "owner", "application/json")
+	if w.Code != 502 {
+		t.Fatalf("stop with a failing bookkeeping: %d %s", w.Code, w.Body.String())
+	}
+	if !stream.isClosed() {
+		t.Fatal("the session was not closed")
+	}
+	// The closed session must leave the broker, so the next chunk is rejected as
+	// a closed run instead of reaching a dead session.
+	chunk := call(t, h, "POST", "/api/audio/runs/"+runID+"/chunks", "audio", "owner", "application/octet-stream")
+	if chunk.Code != 409 {
+		t.Fatalf("chunk after a failed stop: %d %s", chunk.Code, chunk.Body.String())
+	}
+}
+
+func TestStopBookkeepingRunsWhileTheSessionCloses(t *testing.T) {
+	stream := newFakeStream()
+	stream.finalizeDelay = 2 * time.Second
+	h, db := newHandler(t, workingProvider{stream: stream})
+	if w := call(t, h, "POST", "/api/audio/runs", `{"meeting_id":"`+meeting+`","sample_rate":48000}`, "owner", "application/json"); w.Code != 201 {
+		t.Fatalf("start: %d %s", w.Code, w.Body.String())
+	}
+	db.slowStop(2 * time.Second)
+	start := time.Now()
+	w := call(t, h, "POST", "/api/audio/runs/"+runID+"/stop", "", "owner", "application/json")
+	elapsed := time.Since(start)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"status":"stopped"`) {
+		t.Fatalf("stop: %d %s", w.Code, w.Body.String())
+	}
+	// The close and the bookkeeping run at the same time, so the route waits for
+	// the slower one and stays below the write timeout of the server. One after
+	// the other would take about four seconds.
+	if elapsed >= 3*time.Second {
+		t.Fatalf("the stop waited for the close and the bookkeeping one after the other: %s", elapsed)
 	}
 }
 

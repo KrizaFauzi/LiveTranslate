@@ -23,11 +23,17 @@ func NewBroker(cfg config.Config, provider Provider) *Broker {
 
 // Open starts the live transcription of one run.
 func (b *Broker) Open(ctx context.Context, runID string, sampleRate int) (*Session, error) {
-	stream, err := b.provider.Open(ctx, sampleRate)
+	// The provider connection must outlive the request that opens it, so the
+	// session owns its own context: it keeps the values of the caller but
+	// neither its deadline nor its cancellation. The session ends the context
+	// when it closes, so the connection dies with the session.
+	sessionCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	stream, err := b.provider.Open(sessionCtx, sampleRate)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
-	session := NewSession(stream)
+	session := NewSession(stream, cancel)
 	b.mu.Lock()
 	b.sessions[runID] = session
 	b.mu.Unlock()

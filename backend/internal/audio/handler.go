@@ -264,18 +264,36 @@ func (h *handler) stop(w http.ResponseWriter, r *http.Request, runID string) {
 		writeFailure(w, &failure{404, "not_found", "Run capture tidak ditemukan."})
 		return
 	}
+	// The run is read with the token of the caller, so the row of another
+	// account is hidden by RLS: the session of another account is never closed.
+	if _, found, err := h.repo.get(ctx, runID, user, token); err != nil {
+		writeFailure(w, err)
+		return
+	} else if !found {
+		writeFailure(w, &failure{404, "not_found", "Run capture tidak ditemukan."})
+		return
+	}
+	session, live := h.broker.Session(runID)
 	// The close runs on a context detached from the request deadline, because it
 	// can take longer than the request budget and the final segment must survive.
 	closeCtx, cancelClose := context.WithTimeout(context.WithoutCancel(r.Context()), closeBudget)
 	defer cancelClose()
-	if session, live := h.broker.Session(runID); live {
-		closeSession(closeCtx, session)
-	}
-	// The run bookkeeping gets its own detached budget, so a slow close cannot
-	// cancel it before the run is marked stopped.
+	// The bookkeeping gets its own detached budget and runs while the session
+	// closes, so the route waits for both without exceeding the write timeout
+	// of the server.
 	bookCtx, cancelBook := context.WithTimeout(context.WithoutCancel(r.Context()), config.ConnectionTimeout)
 	defer cancelBook()
+	closed := closeSession(session)
 	run, found, err := h.repo.stopRun(bookCtx, runID, user, token)
+	select {
+	case <-closed:
+	case <-closeCtx.Done():
+	}
+	if live {
+		// The session is closed, so it leaves the broker whatever the
+		// bookkeeping answered: a dead session must not stay behind.
+		h.broker.Remove(runID)
+	}
 	if err != nil {
 		writeFailure(w, err)
 		return
@@ -284,23 +302,23 @@ func (h *handler) stop(w http.ResponseWriter, r *http.Request, runID string) {
 		writeFailure(w, &failure{404, "not_found", "Run capture tidak ditemukan."})
 		return
 	}
-	h.broker.Remove(runID)
 	writeJSON(w, 200, map[string]any{"run": run})
 }
 
-// closeSession ends the transcription session of one run. The wait ends when the
-// session is closed or when the budget of the caller expires, so the route always
-// returns in bounded time.
-func closeSession(ctx context.Context, session *transcribe.Session) {
+// closeSession ends the transcription session of one run in the background. The
+// returned channel is closed when the close finished. A run without a live
+// session closes the channel at once.
+func closeSession(session *transcribe.Session) <-chan struct{} {
 	closed := make(chan struct{})
+	if session == nil {
+		close(closed)
+		return closed
+	}
 	go func() {
 		defer close(closed)
 		_ = session.Close()
 	}()
-	select {
-	case <-closed:
-	case <-ctx.Done():
-	}
+	return closed
 }
 
 // RegisterRoutes registers all routes owned by the capture feature.

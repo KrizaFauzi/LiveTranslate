@@ -1,6 +1,7 @@
 package transcribe
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -29,6 +30,9 @@ func (e providerError) Unwrap() error { return e.cause }
 // Session is one live transcription for one run.
 type Session struct {
 	stream Stream
+	// cancel ends the context of the provider stream. The session owns the
+	// context, so the provider connection lives exactly as long as the session.
+	cancel context.CancelFunc
 	mu     sync.Mutex
 	seq    int
 	// backlog keeps the latest segments so a late subscriber can catch up.
@@ -49,9 +53,12 @@ type Session struct {
 }
 
 // NewSession starts one live transcription and publishes the provider results to its subscribers.
-func NewSession(stream Stream) *Session {
+// The cancel function ends the context of the provider stream, so the provider
+// connection is torn down together with the session.
+func NewSession(stream Stream, cancel context.CancelFunc) *Session {
 	session := &Session{
 		stream:      stream,
+		cancel:      cancel,
 		subscribers: map[chan Segment]int{},
 		errCh:       make(chan error, 1),
 		done:        make(chan struct{}),
@@ -86,8 +93,17 @@ func (s *Session) Close() error {
 		s.closeStream()
 		s.wg.Wait()
 		close(s.errCh)
+		s.cancelContext()
 	})
 	return s.closeErr
+}
+
+// cancelContext ends the context of the provider stream, so the provider
+// connection is torn down with the session.
+func (s *Session) cancelContext() {
+	if s.cancel != nil {
+		s.cancel()
+	}
 }
 
 // flush asks the provider for the pending transcript and waits for the final
@@ -228,6 +244,7 @@ func (s *Session) forwardResults() {
 			if !ok {
 				s.shutdown()
 				s.closeStream()
+				s.cancelContext()
 				return
 			}
 			s.publish(result)
@@ -268,6 +285,7 @@ func (s *Session) supervise() {
 			s.setErr(failure)
 			s.shutdown()
 			s.closeStream()
+			s.cancelContext()
 			return
 		}
 	}
