@@ -198,3 +198,92 @@ test('a start refused by the offscreen document never publishes a capturing stat
   assert.equal(c.api.storage.session.values.audio_status, undefined)
   assert.ok(requests.some(([url]) => url === `https://api.test/api/audio/runs/${run.id}/stop`), 'run server yatim ditutup')
 })
+
+test('a failure and a progress report at the same time keep the failed status', async () => {
+  for (const order of ['fail-first', 'progress-first']) {
+    const c = chrome()
+    const capture = createAudioCapture({
+      chromeApi: c.api,
+      session: c.api.storage.session,
+      credentials: async () => ({ userId: 'user', accessToken: 'token' }),
+      fetchImpl: async () => Response.json({ run }),
+      baseUrl: 'https://api.test',
+    })
+    await capture.start({ meetingId, tabId: 7 })
+    const fail = () => capture.fail('Gagal mengirim audio ke server.')
+    const progress = () => capture.progress({ chunks: 3, bytes: 2048 })
+    await Promise.all(order === 'fail-first' ? [fail(), progress()] : [progress(), fail()])
+    const status = await capture.read()
+    assert.equal(status.status, 'error', order)
+    assert.equal(status.message, 'Gagal mengirim audio ke server.', order)
+    assert.equal(status.chunks, 3, order)
+  }
+})
+
+test('a new capture closes a failed run that only the stored state knows about', async () => {
+  const c = chrome()
+  const requests = []
+  let created = 0
+  const options = {
+    chromeApi: c.api,
+    session: c.api.storage.session,
+    credentials: async () => ({ userId: 'user', accessToken: 'token' }),
+    fetchImpl: async (url, request) => {
+      requests.push([url, request])
+      if (url.endsWith('/stop')) return Response.json({ run })
+      created += 1
+      return Response.json({ run: { ...run, id: `run-${created}` } })
+    },
+    baseUrl: 'https://api.test',
+  }
+  const first = createAudioCapture(options)
+  await first.start({ meetingId, tabId: 7 })
+  await first.fail('Gagal mengirim audio ke server.')
+  const second = createAudioCapture(options)
+  await second.start({ meetingId, tabId: 7 })
+  assert.ok(requests.some(([url]) => url === 'https://api.test/api/audio/runs/run-1/stop'), 'run gagal ditutup di server')
+  const status = await second.read()
+  assert.equal(status.status, 'capturing')
+  assert.equal(status.run_id, 'run-2')
+})
+
+test('a failed run is closed when its tab closes, even after a worker restart', async () => {
+  const c = chrome()
+  const requests = []
+  let created = 0
+  const options = {
+    chromeApi: c.api,
+    session: c.api.storage.session,
+    credentials: async () => ({ userId: 'user', accessToken: 'token' }),
+    fetchImpl: async (url, request) => {
+      requests.push([url, request])
+      if (url.endsWith('/stop')) return Response.json({ run })
+      created += 1
+      return Response.json({ run: { ...run, id: `run-${created}` } })
+    },
+    baseUrl: 'https://api.test',
+  }
+  const first = createAudioCapture(options)
+  await first.start({ meetingId, tabId: 7 })
+  await first.fail('Gagal mengirim audio ke server.')
+  const second = createAudioCapture(options)
+  await second.stopIfTab(7)
+  assert.ok(requests.some(([url]) => url === 'https://api.test/api/audio/runs/run-1/stop'), 'run gagal ditutup di server')
+})
+
+test('a failure after the capture stopped leaves no stale run id behind', async () => {
+  const c = chrome()
+  const capture = createAudioCapture({
+    chromeApi: c.api,
+    session: c.api.storage.session,
+    credentials: async () => ({ userId: 'user', accessToken: 'token' }),
+    fetchImpl: async () => Response.json({ run }),
+    baseUrl: 'https://api.test',
+  })
+  await capture.start({ meetingId, tabId: 7 })
+  await capture.stop()
+  await capture.fail('Gagal mengirim audio ke server.')
+  const status = await capture.read()
+  assert.equal(status.status, 'error')
+  assert.equal(status.run_id, undefined)
+})
