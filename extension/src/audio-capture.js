@@ -58,6 +58,15 @@ export function createAudioCapture({ chromeApi, session, credentials, fetchImpl 
     return response
   }
 
+  // The backend needs the sample rate of the run, and only the capture knows it: the document
+  // offscreen reports the rate of its audio context, which is the rate the audio is recorded in.
+  async function probeSampleRate() {
+    const response = await toOffscreen('audio.capture.probe', {})
+    const rate = response?.sample_rate
+    if (!Number.isInteger(rate) || rate <= 0) throw new Error('Sample rate audio tidak dapat dibaca.')
+    return rate
+  }
+
   async function stopRun() {
     const stored = await read()
     const current = active ?? stored
@@ -90,15 +99,18 @@ export function createAudioCapture({ chromeApi, session, credentials, fetchImpl 
       error.status = 401
       throw error
     }
-    const { run } = await api('/api/audio/runs', auth.accessToken, { meeting_id: meetingId })
+    // The document offscreen has to exist before it can report its sample rate.
+    await ensureOffscreen()
+    const sampleRate = await probeSampleRate()
+    const { run } = await api('/api/audio/runs', auth.accessToken, { meeting_id: meetingId, sample_rate: sampleRate })
     try {
       const streamId = await chromeApi.tabCapture.getMediaStreamId({ targetTabId: tabId })
-      await ensureOffscreen()
       await toOffscreen('audio.capture.start', {
         run_id: run.id,
         stream_id: streamId,
         token: auth.accessToken,
         base_url: baseUrl,
+        sample_rate: sampleRate,
       })
     } catch (error) {
       // The run was created but the capture never started: close it again on the server.

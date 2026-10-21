@@ -13,7 +13,7 @@ function storage() {
   }
 }
 
-function chrome({ captureResponse = null } = {}) {
+function chrome({ captureResponse = null, probeResponse = { ok: true, sample_rate: 48000 } } = {}) {
   const created = []
   const messages = []
   let document = false
@@ -31,6 +31,7 @@ function chrome({ captureResponse = null } = {}) {
       runtime: {
         async sendMessage(message) {
           messages.push(message)
+          if (message.type === 'audio.capture.probe') return probeResponse
           if (captureResponse && message.type === 'audio.capture.start') return captureResponse
           return { ok: true }
         },
@@ -61,9 +62,40 @@ test('start creates a run, captures the tab and publishes the capture status', a
   assert.equal(JSON.parse(requests[0][1].body).meeting_id, meetingId)
   assert.equal(c.created.length, 1)
   assert.equal(c.created[0].reasons[0], 'USER_MEDIA')
-  assert.equal(c.messages[0].type, 'audio.capture.start')
-  assert.equal(c.messages[0].input.stream_id, 'stream-7')
+  assert.deepEqual(c.messages.map(message => message.type), ['audio.capture.probe', 'audio.capture.start'])
+  assert.equal(c.messages[1].input.stream_id, 'stream-7')
   assert.equal(c.api.storage.session.values.audio_status.status, 'capturing')
+})
+
+test('the run is created with the sample rate that the capture reports', async () => {
+  const c = chrome({ probeResponse: { ok: true, sample_rate: 44100 } })
+  const requests = []
+  const capture = createAudioCapture({
+    chromeApi: c.api,
+    session: c.api.storage.session,
+    credentials: async () => ({ userId: 'user', accessToken: 'token' }),
+    fetchImpl: async (url, options) => { requests.push([url, options]); return Response.json({ run }) },
+    baseUrl: 'https://api.test',
+  })
+  await capture.start({ meetingId, tabId: 7 })
+  assert.equal(c.messages[0].type, 'audio.capture.probe', 'the sample rate is asked before the run is created')
+  assert.equal(JSON.parse(requests[0][1].body).sample_rate, 44100)
+  const start = c.messages.find(message => message.type === 'audio.capture.start')
+  assert.equal(start.input.sample_rate, 44100, 'the capture uses the rate of the run')
+})
+
+test('a start without a usable sample rate creates no run', async () => {
+  const c = chrome({ probeResponse: { ok: true } })
+  const requests = []
+  const capture = createAudioCapture({
+    chromeApi: c.api,
+    session: c.api.storage.session,
+    credentials: async () => ({ userId: 'user', accessToken: 'token' }),
+    fetchImpl: async (url, options) => { requests.push([url, options]); return Response.json({ run }) },
+    baseUrl: 'https://api.test',
+  })
+  await assert.rejects(() => capture.start({ meetingId, tabId: 7 }), /Sample rate/)
+  assert.equal(requests.length, 0, 'tanpa sample rate tidak ada run yang dibuat')
 })
 
 test('start refuses to run without a registered meeting or a session', async () => {

@@ -1,9 +1,14 @@
 import { toMonoPcm16, frameSizeFor } from './pcm16.js'
+import { openTranscriptStream } from './transcript-stream.js'
+import { applySegment, applyStatus, emptyState } from './transcript-state.js'
 
 const WORKLET_FILE = 'pcm-worklet.js'
 const WORKLET_NODE = 'pcm-capture'
 const CHUNK_MILLISECONDS = 100
 const PREFERRED_SAMPLE_RATE = 48000
+// The transcript lives in the session storage of the browser: it is never written to a file and
+// never leaves the browser.
+const TRANSCRIPT_KEY = 'transcript_state'
 // At most 50 frames (5 seconds of audio) wait for the backend. Newer frames are dropped and
 // reported instead of growing the queue without bound.
 const MAX_PENDING_FRAMES = 50
@@ -34,6 +39,11 @@ export function createOffscreenCapture({
   let pending = 0
   let overflowReported = false
   let queue = Promise.resolve()
+  let transcriptController = null
+  let transcriptState = null
+  // Every change of the transcript state is a read-modify-write cycle, so the changes run one
+  // after another: a segment never overwrites the one before it.
+  let stateQueue = Promise.resolve()
 
   // The progress report is fire and forget: it waits for the service worker to wake up, so it
   // must never sit in the upload chain.
@@ -43,6 +53,45 @@ export function createOffscreenCapture({
 
   function reportError(message) {
     return chromeApi.runtime.sendMessage({ type: 'audio.error', input: { message } }).catch(() => {})
+  }
+
+  // The transcript state lives in the session storage: the popup reads it while the capture runs.
+  async function writeState(state) {
+    const storage = chromeApi.storage?.session
+    if (!storage) return
+    await storage.set({ [TRANSCRIPT_KEY]: state }).catch(() => {})
+  }
+
+  // updateState applies one change to the transcript state. The changes run one after another, so
+  // a segment never overwrites the one before it.
+  function updateState(change) {
+    stateQueue = stateQueue.then(async () => {
+      transcriptState = change(transcriptState ?? emptyState(null))
+      await writeState(transcriptState)
+    }).catch(() => {})
+    return stateQueue
+  }
+
+  // openTranscript reads the transcript of the run. The stream lives as long as the capture runs
+  // and asks for the segments the client already has, so a replayed backlog is not shown twice.
+  function openTranscript(input) {
+    const base = (input.base_url || '').replace(/\/$/, '')
+    const controller = new AbortController()
+    transcriptController = controller
+    openTranscriptStream({
+      url: `${base}/api/audio/runs/${input.run_id}/transcript?since=${transcriptState?.last_seq ?? 0}`,
+      token: input.token,
+      signal: controller.signal,
+      fetchImpl,
+      requestToken: () => requestToken(),
+      onSegment: segment => { updateState(state => applySegment(state, segment)) },
+      onEnd: () => { updateState(state => applyStatus(state, 'transcribed')) },
+      onError: message => {
+        updateState(state => applyStatus(state, 'transcript_error', message))
+        // The worker owns the run, so it has to learn that the transcription failed.
+        reportError(message)
+      },
+    }).catch(() => reportError('Gagal menyimpan transkrip.'))
   }
 
   async function sendChunk(buffer, token) {
@@ -212,6 +261,9 @@ export function createOffscreenCapture({
       reportError(`Gagal memulai capture audio: ${error.message}`)
       throw error
     }
+    // The transcript belongs to one run: a new run empties the state of the old one.
+    await updateState(() => emptyState(input.run_id))
+    openTranscript(input)
   }
 
   async function drain() {
@@ -223,6 +275,9 @@ export function createOffscreenCapture({
 
   async function stop() {
     if (!node && !audioContext) return
+    // The stream of the transcript ends with the capture: the last final stays in the state.
+    transcriptController?.abort()
+    transcriptController = null
     // The worklet keeps up to 100 ms of audio that never leaves the page. Live transcription
     // accepts that loss: the transcript only misses the last fraction of a second.
     if (node) {
@@ -237,6 +292,9 @@ export function createOffscreenCapture({
     }
     await release()
     await drain()
+    // The run is over, so the transcript is finished. A failed transcript keeps its status: the
+    // user must see that the transcription failed.
+    await updateState(state => state.status === 'transcript_error' ? state : applyStatus(state, 'transcribed'))
   }
 
   function handleMessage(message, respond) {
