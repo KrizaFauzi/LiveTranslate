@@ -4,7 +4,14 @@ import (
 	"context"
 	"livetranslate/backend/internal/config"
 	"sync"
+	"time"
 )
+
+// handshakeTimeout bounds the handshake of the provider. The Deepgram SDK
+// retries a connection for much longer than a request may wait, so the
+// handshake has its own limit while the connection itself lives as long as the
+// session.
+var handshakeTimeout = config.ConnectionTimeout
 
 // Broker keeps one live transcription session per capture run.
 type Broker struct {
@@ -28,7 +35,7 @@ func (b *Broker) Open(ctx context.Context, runID string, sampleRate int) (*Sessi
 	// neither its deadline nor its cancellation. The session ends the context
 	// when it closes, so the connection dies with the session.
 	sessionCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	stream, err := b.provider.Open(sessionCtx, sampleRate)
+	stream, err := openProvider(sessionCtx, b.provider, sampleRate)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -38,6 +45,31 @@ func (b *Broker) Open(ctx context.Context, runID string, sampleRate int) (*Sessi
 	b.sessions[runID] = session
 	b.mu.Unlock()
 	return session, nil
+}
+
+// openProvider opens the provider stream within the handshake budget. The
+// provider runs in the background, so a provider that keeps retrying cannot
+// hold the request that opens the session. The session context is ended by the
+// caller when the budget expires, so the provider call and its connection die
+// with it.
+func openProvider(ctx context.Context, provider Provider, sampleRate int) (Stream, error) {
+	type outcome struct {
+		stream Stream
+		err    error
+	}
+	opened := make(chan outcome, 1)
+	go func() {
+		stream, err := provider.Open(ctx, sampleRate)
+		opened <- outcome{stream, err}
+	}()
+	timer := time.NewTimer(handshakeTimeout)
+	defer timer.Stop()
+	select {
+	case result := <-opened:
+		return result.stream, result.err
+	case <-timer.C:
+		return nil, ErrProviderConnect
+	}
 }
 
 // Configured reports whether the provider has the configuration it needs to open

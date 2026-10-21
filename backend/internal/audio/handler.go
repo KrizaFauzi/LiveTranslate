@@ -20,12 +20,29 @@ const (
 	maxChunkBytes = 2 << 20
 	// maxRunBytes bounds the total streamed volume of one run.
 	maxRunBytes = 1 << 30
+)
+
+// The budgets of the capture routes. The server writes the response within
+// 2 * config.ConnectionTimeout, so every route has to answer before that, and
+// the phases of a route add up to less than it.
+var (
+	// startBudget bounds the identification, the ownership read, and the run row
+	// of the run creation.
+	startBudget = 5 * time.Second
+	// failureBudget bounds the bookkeeping of a run whose session did not open.
+	failureBudget = 3 * time.Second
+	// ownershipBudget bounds the identification and the ownership read of the stop
+	// route.
+	ownershipBudget = 5 * time.Second
 	// closeBudget bounds the wait for the session close of the stop route.
 	// Session.Close has a worst case of about 10.5 seconds (provider finalize
 	// 5 s, flush window 0.5 s, teardown 5 s), so the close gets its own budget
 	// on a context detached from the request deadline: a request-scoped
 	// deadline would cancel the close halfway and the final segment would be lost.
-	closeBudget = 12 * time.Second
+	closeBudget = 10 * time.Second
+	// bookkeepingBudget bounds the run bookkeeping of the stop route. It runs
+	// while the session closes, so the two budgets do not add up.
+	bookkeepingBudget = 10 * time.Second
 )
 
 var uuidPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -98,7 +115,10 @@ func identify(ctx context.Context, verify func(context.Context, string) (string,
 // start creates the run row and opens the transcription session of the run. The
 // row comes first, so a session that cannot be opened leaves a run marked failed.
 func (h *handler) start(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), config.ConnectionTimeout)
+	// The identification, the ownership read, and the run row share one budget,
+	// so the route reaches the handshake of the provider in time. The handshake
+	// itself has its own budget inside the broker.
+	ctx, cancel := context.WithTimeout(r.Context(), startBudget)
 	defer cancel()
 	user, token, err := identify(ctx, h.verify, r)
 	if err != nil {
@@ -144,10 +164,9 @@ func (h *handler) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, openErr := h.broker.Open(ctx, run.ID, sampleRate); openErr != nil {
-		// The failed run is marked on a context detached from the request
-		// deadline, so a provider that used up the whole request budget still
-		// leaves the run marked failed.
-		failedCtx, cancelFailed := context.WithTimeout(context.WithoutCancel(r.Context()), config.ConnectionTimeout)
+		// The failed run is marked on a context of its own, so a provider that
+		// used up the whole request budget still leaves the run marked failed.
+		failedCtx, cancelFailed := context.WithTimeout(context.WithoutCancel(r.Context()), failureBudget)
 		defer cancelFailed()
 		_ = h.repo.markFailed(failedCtx, run.ID, user, token)
 		if errors.Is(openErr, transcribe.ErrProviderConfig) {
@@ -253,7 +272,9 @@ func (h *handler) chunk(w http.ResponseWriter, r *http.Request, runID string) {
 // stop closes the transcription session of the run, marks the run stopped, and
 // drops the session from the broker.
 func (h *handler) stop(w http.ResponseWriter, r *http.Request, runID string) {
-	ctx, cancel := context.WithTimeout(r.Context(), config.ConnectionTimeout)
+	// The identification and the ownership read share one budget, so the close
+	// phase starts at the latest after that budget.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), ownershipBudget)
 	defer cancel()
 	user, token, err := identify(ctx, h.verify, r)
 	if err != nil {
@@ -266,6 +287,8 @@ func (h *handler) stop(w http.ResponseWriter, r *http.Request, runID string) {
 	}
 	// The run is read with the token of the caller, so the row of another
 	// account is hidden by RLS: the session of another account is never closed.
+	// A run whose row stays invisible keeps its session, because the caller
+	// cannot prove the ownership of that run.
 	if _, found, err := h.repo.get(ctx, runID, user, token); err != nil {
 		writeFailure(w, err)
 		return
@@ -281,7 +304,7 @@ func (h *handler) stop(w http.ResponseWriter, r *http.Request, runID string) {
 	// The bookkeeping gets its own detached budget and runs while the session
 	// closes, so the route waits for both without exceeding the write timeout
 	// of the server.
-	bookCtx, cancelBook := context.WithTimeout(context.WithoutCancel(r.Context()), config.ConnectionTimeout)
+	bookCtx, cancelBook := context.WithTimeout(context.WithoutCancel(r.Context()), bookkeepingBudget)
 	defer cancelBook()
 	closed := closeSession(session)
 	run, found, err := h.repo.stopRun(bookCtx, runID, user, token)

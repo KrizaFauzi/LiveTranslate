@@ -303,6 +303,58 @@ func TestSessionErrIsNilAfterANormalEnd(t *testing.T) {
 	}
 }
 
+// slowProvider blocks in Open until its context ends, like a provider that
+// cannot be reached.
+type slowProvider struct {
+	started chan context.Context
+}
+
+func newSlowProvider() *slowProvider {
+	return &slowProvider{started: make(chan context.Context, 1)}
+}
+
+func (p *slowProvider) Open(ctx context.Context, _ int) (Stream, error) {
+	p.started <- ctx
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestBrokerOpenBoundsTheHandshake(t *testing.T) {
+	original := handshakeTimeout
+	handshakeTimeout = 100 * time.Millisecond
+	defer func() { handshakeTimeout = original }()
+	provider := newSlowProvider()
+	broker := NewBroker(config.Config{}, provider)
+	start := time.Now()
+	opened := make(chan error, 1)
+	go func() {
+		_, err := broker.Open(context.Background(), "run-1", 48000)
+		opened <- err
+	}()
+	var err error
+	select {
+	case err = <-opened:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the handshake was not bounded")
+	}
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected the handshake to fail")
+	}
+	if !errors.Is(err, ErrProviderConnect) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if elapsed > 2*handshakeTimeout {
+		t.Fatalf("the handshake was not bounded: %s", elapsed)
+	}
+	// The session context ends with the failed handshake, so the blocked
+	// provider call does not leak.
+	sessionCtx := <-provider.started
+	if err := sessionCtx.Err(); err == nil {
+		t.Fatal("the session context outlived the failed handshake")
+	}
+}
+
 func TestUnsubscribeStopsDelivery(t *testing.T) {
 	stream := &fakeStream{results: make(chan Result, 4), errors: make(chan error, 1)}
 	broker := NewBroker(config.Config{}, &fakeProvider{stream: stream})

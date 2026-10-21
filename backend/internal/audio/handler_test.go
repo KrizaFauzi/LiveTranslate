@@ -36,11 +36,35 @@ func jsonResponse(status int, value any) *http.Response {
 // fakeDB is the state of the in-memory Data API. The tests use it to observe
 // the calls of the handler and to arm a slow or failing bookkeeping.
 type fakeDB struct {
-	mu          sync.Mutex
-	paths       []string
-	patchStatus string
-	stopFails   bool
-	stopDelay   time.Duration
+	mu             sync.Mutex
+	paths          []string
+	patchStatus    string
+	stopFails      bool
+	stopDelay      time.Duration
+	ownershipDelay time.Duration
+}
+
+// slowOwnership delays the ownership reads of the Data API.
+func (db *fakeDB) slowOwnership(delay time.Duration) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	db.ownershipDelay = delay
+}
+
+// slowPause waits for the delay, or until the request ends. It reports the
+// error of the request when the deadline of the caller expires first.
+func slowPause(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // lastPatchStatus returns the status of the last PATCH of the Data API.
@@ -198,6 +222,9 @@ func newHandler(t *testing.T, provider transcribe.Provider) (http.Handler, *fake
 			}
 			return jsonResponse(401, map[string]string{"msg": "invalid"}), nil
 		case r.URL.Path == "/rest/v1/meeting_sessions":
+			if err := slowPause(r.Context(), db.ownershipDelay); err != nil {
+				return nil, err
+			}
 			if r.URL.Query().Get("id") == "eq."+meeting {
 				return jsonResponse(200, []map[string]string{{"id": meeting}}), nil
 			}
@@ -218,6 +245,9 @@ func newHandler(t *testing.T, provider transcribe.Provider) (http.Handler, *fake
 				"bytes_received": bytesSeen, "chunks_received": chunksSeen, "started_at": "2026-10-21T00:00:00Z", "ended_at": nil,
 			}}), nil
 		case r.URL.Path == "/rest/v1/meeting_runs" && r.Method == "GET":
+			if err := slowPause(r.Context(), db.ownershipDelay); err != nil {
+				return nil, err
+			}
 			if r.Header.Get("Authorization") != "Bearer owner" {
 				return jsonResponse(200, []map[string]any{}), nil
 			}
@@ -251,7 +281,9 @@ func newHandler(t *testing.T, provider transcribe.Provider) (http.Handler, *fake
 				return jsonResponse(200, []map[string]any{}), nil
 			}
 			if db.stopDelay > 0 {
-				time.Sleep(db.stopDelay)
+				if err := slowPause(r.Context(), db.stopDelay); err != nil {
+					return nil, err
+				}
 			}
 			if db.stopFails {
 				return jsonResponse(500, map[string]string{"message": "bookkeeping gagal"}), nil
@@ -498,6 +530,67 @@ func TestStopBookkeepingRunsWhileTheSessionCloses(t *testing.T) {
 	// the other would take about four seconds.
 	if elapsed >= 3*time.Second {
 		t.Fatalf("the stop waited for the close and the bookkeeping one after the other: %s", elapsed)
+	}
+}
+
+func TestStopOwnershipReadIsBounded(t *testing.T) {
+	original := ownershipBudget
+	ownershipBudget = 200 * time.Millisecond
+	defer func() { ownershipBudget = original }()
+	stream := newFakeStream()
+	h, db := newHandler(t, workingProvider{stream: stream})
+	if w := call(t, h, "POST", "/api/audio/runs", `{"meeting_id":"`+meeting+`","sample_rate":48000}`, "owner", "application/json"); w.Code != 201 {
+		t.Fatalf("start: %d %s", w.Code, w.Body.String())
+	}
+	db.slowOwnership(2 * time.Second)
+	start := time.Now()
+	w := call(t, h, "POST", "/api/audio/runs/"+runID+"/stop", "", "owner", "application/json")
+	elapsed := time.Since(start)
+	if w.Code != 504 {
+		t.Fatalf("stop with a slow ownership read: %d %s", w.Code, w.Body.String())
+	}
+	if elapsed >= time.Second {
+		t.Fatalf("the ownership read was not bounded: %s", elapsed)
+	}
+	if stream.isClosed() {
+		t.Fatal("the session was closed although the ownership read failed")
+	}
+}
+
+func TestRunCreationIsBounded(t *testing.T) {
+	original := startBudget
+	startBudget = 200 * time.Millisecond
+	defer func() { startBudget = original }()
+	h, db := newHandler(t, workingProvider{})
+	db.slowOwnership(2 * time.Second)
+	start := time.Now()
+	w := call(t, h, "POST", "/api/audio/runs", `{"meeting_id":"`+meeting+`","sample_rate":48000}`, "owner", "application/json")
+	elapsed := time.Since(start)
+	if w.Code != 504 {
+		t.Fatalf("run creation with a slow ownership read: %d %s", w.Code, w.Body.String())
+	}
+	if elapsed >= time.Second {
+		t.Fatalf("the run creation was not bounded: %s", elapsed)
+	}
+}
+
+func TestRouteBudgetsStayBelowTheServerWriteTimeout(t *testing.T) {
+	// The server writes the response within 2 * config.ConnectionTimeout, so the
+	// phases of a route have to fit in that window.
+	if ownershipBudget > 5*time.Second {
+		t.Fatalf("the ownership read may take %s", ownershipBudget)
+	}
+	if closeBudget > 10*time.Second {
+		t.Fatalf("the session close may take %s", closeBudget)
+	}
+	if bookkeepingBudget > 10*time.Second {
+		t.Fatalf("the run bookkeeping may take %s", bookkeepingBudget)
+	}
+	if ownershipBudget+closeBudget >= 2*config.ConnectionTimeout {
+		t.Fatalf("the stop route can outlive the write timeout of the server: %s", ownershipBudget+closeBudget)
+	}
+	if startBudget+10*time.Second+failureBudget >= 2*config.ConnectionTimeout {
+		t.Fatalf("the run creation can outlive the write timeout of the server: %s", startBudget+10*time.Second+failureBudget)
 	}
 }
 
