@@ -34,6 +34,16 @@ func (b *Broker) Open(ctx context.Context, runID string, sampleRate int) (*Sessi
 	return session, nil
 }
 
+// Configured reports whether the provider has the configuration it needs to open
+// a stream. A provider that cannot report its configuration is assumed to be ready.
+func (b *Broker) Configured() bool {
+	provider, ok := b.provider.(Configurable)
+	if !ok {
+		return true
+	}
+	return provider.Configured()
+}
+
 // Session returns the live session of one run.
 func (b *Broker) Session(runID string) (*Session, bool) {
 	b.mu.Lock()

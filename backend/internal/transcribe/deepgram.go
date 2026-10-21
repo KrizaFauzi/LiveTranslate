@@ -5,6 +5,7 @@ import (
 	"errors"
 	"livetranslate/backend/internal/config"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,17 +48,26 @@ func newDeepgramProvider(cfg config.Config) Provider {
 
 // Open connects to the Deepgram live API and starts forwarding provider messages.
 func (p *deepgramProvider) Open(ctx context.Context, sampleRate int) (Stream, error) {
+	if !p.Configured() {
+		return nil, ErrProviderConfig
+	}
 	chans := newDeepgramChans()
 	options := liveOptions(p.cfg.DeepgramModel, deepgramLanguage(), sampleRate)
 	client, err := clientws.NewUsingChan(ctx, p.cfg.DeepgramKey, &clientinterfaces.ClientOptions{}, options, chans)
 	if err != nil || client == nil {
-		return nil, errors.New("konfigurasi Deepgram tidak valid")
+		return nil, ErrProviderConfig
 	}
 	if !client.Connect() {
 		client.Stop()
-		return nil, errors.New("koneksi Deepgram gagal")
+		return nil, ErrProviderConnect
 	}
 	return newDeepgramStream(client, chans), nil
+}
+
+// Configured reports whether the provider has the key and the model it needs to
+// open a stream.
+func (p *deepgramProvider) Configured() bool {
+	return strings.TrimSpace(p.cfg.DeepgramKey) != "" && strings.TrimSpace(p.cfg.DeepgramModel) != ""
 }
 
 // deepgramLanguage reads the transcription language until the config carries it.
