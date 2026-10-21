@@ -12,3 +12,4 @@ http/e2e.env
 http/resterm.env.local.json
 http/.resterm/
 http/resterm.env.json
+!fixtures/meeting-urls.json

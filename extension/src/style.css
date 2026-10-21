@@ -30,3 +30,5 @@ footer p { margin: 4px 0; color: #63718b; font-size: 11px; }
 .eyebrow { font-size: 10px; color: #247b58; letter-spacing: 1px; font-weight: 700; }
 .email { color: #63718b; overflow-wrap: anywhere; }
 .secondary { width: 100%; background: #eef2f8; color: #314362; margin-top: 12px; }
+
+.meeting-link, .meeting-id { overflow-wrap: anywhere; font-size: 12px; }

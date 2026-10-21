@@ -1,0 +1,88 @@
+[
+  {
+    "url": "https://meet.google.com/abc-defg-hij?authuser=1#fragment",
+    "key": "google_meet:meet.google.com:abc-defg-hij",
+    "canonical": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+    "url": "https://meet.google.com/abc-defg-hij/",
+    "key": "google_meet:meet.google.com:abc-defg-hij",
+    "canonical": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+    "url": "https://us06web.zoom.us/wc/12345678901/join?pwd=SECRET",
+    "key": "zoom:zoom.us:12345678901",
+    "canonical": "https://zoom.us/wc/12345678901/join"
+  },
+  {
+    "url": "https://app.zoom.us/wc/join/12345678901#token",
+    "key": "zoom:zoom.us:12345678901",
+    "canonical": "https://zoom.us/wc/12345678901/join"
+  },
+  {
+    "url": "https://zoom.us/wc/12345678901/start",
+    "key": "zoom:zoom.us:12345678901",
+    "canonical": "https://zoom.us/wc/12345678901/join"
+  },
+  {
+    "url": "https://meet.jit.si/EngineeringRoom?jwt=SECRET#config.prejoinPageEnabled=false",
+    "key": "jitsi:meet.jit.si:engineeringroom",
+    "canonical": "https://meet.jit.si/engineeringroom"
+  },
+  {
+    "url": "https://meet.jit.si/engineeringroom",
+    "key": "jitsi:meet.jit.si:engineeringroom",
+    "canonical": "https://meet.jit.si/engineeringroom"
+  },
+  {
+    "url": "https://meet.google.com/"
+  },
+  {
+    "url": "https://meet.google.com/landing"
+  },
+  {
+    "url": "https://meet.google.com.evil.test/abc-defg-hij"
+  },
+  {
+    "url": "https://zoom.us.evil.test/wc/12345678901/join"
+  },
+  {
+    "url": "https://evilzoom.us/wc/12345678901/join"
+  },
+  {
+    "url": "https://zoom.us/j/12345678901?pwd=SECRET"
+  },
+  {
+    "url": "https://zoom.us/wc/join"
+  },
+  {
+    "url": "https://zoom.us/profile"
+  },
+  {
+    "url": "https://meet.jit.si/"
+  },
+  {
+    "url": "https://meet.jit.si/static"
+  },
+  {
+    "url": "https://meet.jit.si/a/b"
+  },
+  {
+    "url": "https://jitsi.example.com/EngineeringRoom"
+  },
+  {
+    "url": "http://meet.google.com/abc-defg-hij"
+  },
+  {
+    "url": "https://user:pass@meet.google.com/abc-defg-hij"
+  },
+  {
+    "url": "https://meet.google.com:8443/abc-defg-hij"
+  },
+  {
+    "url": "https://meet.jit.si/%2Froom"
+  },
+  {
+    "url": "not a URL"
+  }
+]
