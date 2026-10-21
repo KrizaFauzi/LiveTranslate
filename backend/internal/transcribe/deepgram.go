@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"livetranslate/backend/internal/config"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -52,7 +51,7 @@ func (p *deepgramProvider) Open(ctx context.Context, sampleRate int) (Stream, er
 		return nil, ErrProviderConfig
 	}
 	chans := newDeepgramChans()
-	options := liveOptions(p.cfg.DeepgramModel, deepgramLanguage(), sampleRate)
+	options := liveOptions(p.cfg.DeepgramModel, deepgramLanguage(p.cfg), sampleRate)
 	client, err := clientws.NewUsingChan(ctx, p.cfg.DeepgramKey, &clientinterfaces.ClientOptions{}, options, chans)
 	if err != nil || client == nil {
 		return nil, ErrProviderConfig
@@ -70,9 +69,10 @@ func (p *deepgramProvider) Configured() bool {
 	return strings.TrimSpace(p.cfg.DeepgramKey) != "" && strings.TrimSpace(p.cfg.DeepgramModel) != ""
 }
 
-// deepgramLanguage reads the transcription language until the config carries it.
-func deepgramLanguage() string {
-	language := os.Getenv("DEEPGRAM_LANGUAGE")
+// deepgramLanguage reads the transcription language from the configuration. An
+// empty language lets the provider detect the language itself.
+func deepgramLanguage(cfg config.Config) string {
+	language := strings.TrimSpace(cfg.DeepgramLanguage)
 	if language == "" {
 		return "multi"
 	}

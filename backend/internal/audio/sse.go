@@ -1,6 +1,7 @@
 package audio
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"livetranslate/backend/internal/transcribe"
@@ -9,12 +10,23 @@ import (
 	"time"
 )
 
+// transcriptBudget bounds the identification and the ownership read of the
+// transcript route. The stream itself runs on the context of the request, so it
+// lasts as long as the client keeps the connection open.
+var transcriptBudget = 5 * time.Second
+
 // transcript streams the transcript of one run as Server-Sent Events. The
 // segments live in the memory of the session, so no transcript is ever stored.
-// The route runs on the context of the request, so the stream lasts as long as
-// the client keeps the connection open.
+// The phase before the stream has its own budget, and the stream itself runs
+// on the context of the request, so it lasts as long as the client keeps the
+// connection open.
 func (h *handler) transcript(w http.ResponseWriter, r *http.Request, runID string) {
-	user, token, err := identify(r.Context(), h.verify, r)
+	// The identification and the ownership read share one budget, so a slow
+	// database cannot hold the route without a deadline. The stream itself
+	// keeps the context of the request, so it ends when the client leaves.
+	ctx, cancel := context.WithTimeout(r.Context(), transcriptBudget)
+	defer cancel()
+	user, token, err := identify(ctx, h.verify, r)
 	if err != nil {
 		writeFailure(w, err)
 		return
@@ -25,7 +37,7 @@ func (h *handler) transcript(w http.ResponseWriter, r *http.Request, runID strin
 	}
 	// The run is read with the token of the caller, so the row of another
 	// account is hidden by RLS: the stream of another account is never opened.
-	run, found, err := h.repo.get(r.Context(), runID, user, token)
+	run, found, err := h.repo.get(ctx, runID, user, token)
 	if err != nil {
 		writeFailure(w, err)
 		return

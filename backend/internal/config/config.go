@@ -20,6 +20,7 @@ type Config struct {
 	SupabaseAuthRedirectURL string
 	DeepgramKey             string
 	DeepgramModel           string
+	DeepgramLanguage        string
 	SumopodBaseURL          string
 	SumopodKey              string
 	SumopodModel            string
@@ -33,8 +34,9 @@ func Load() Config {
 	return Config{
 		SupabaseURL: os.Getenv("SUPABASE_URL"), SupabaseKey: os.Getenv("SUPABASE_PUBLISHABLE_KEY"),
 		SupabaseAuthRedirectURL: os.Getenv("SUPABASE_AUTH_REDIRECT_URL"), DeepgramKey: os.Getenv("DEEPGRAM_API_KEY"),
-		DeepgramModel: os.Getenv("DEEPGRAM_MODEL"), SumopodBaseURL: base,
-		SumopodKey: os.Getenv("SUMOPOD_API_KEY"), SumopodModel: os.Getenv("SUMOPOD_MODEL"),
+		DeepgramModel: os.Getenv("DEEPGRAM_MODEL"), DeepgramLanguage: os.Getenv("DEEPGRAM_LANGUAGE"),
+		SumopodBaseURL: base,
+		SumopodKey:     os.Getenv("SUMOPOD_API_KEY"), SumopodModel: os.Getenv("SUMOPOD_MODEL"),
 	}
 }
 

@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"livetranslate/backend/internal/config"
 	"livetranslate/backend/internal/transcribe"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -250,4 +252,99 @@ func TestTranscriptStreamSurvivesTheServerWriteTimeout(t *testing.T) {
 	// The session ends, so the handler returns and the server closes the
 	// connection.
 	stop()
+}
+
+// TestTranscriptStreamBoundsTheOwnershipRead covers the phase before the
+// stream starts: a slow ownership read must not hold the route without a
+// budget.
+func TestTranscriptStreamBoundsTheOwnershipRead(t *testing.T) {
+	original := transcriptBudget
+	transcriptBudget = 200 * time.Millisecond
+	defer func() { transcriptBudget = original }()
+	stream := newFakeStream()
+	h, broker, db := newHandlerWithBroker(t, workingProvider{stream: stream})
+	if _, err := broker.Open(context.Background(), runID, 48000); err != nil {
+		t.Fatalf("the session did not open: %v", err)
+	}
+	db.slowOwnership(2 * time.Second)
+	// The watchdog ends the session, so a route that is not bounded ends the
+	// stream instead of blocking the test.
+	stop := endSession(stream)
+	go func() {
+		time.Sleep(3 * time.Second)
+		stop()
+	}()
+	start := time.Now()
+	w := call(t, h, "GET", "/api/audio/runs/"+runID+"/transcript", "", "owner", "")
+	elapsed := time.Since(start)
+	if w.Code != 504 {
+		t.Fatalf("the transcript route with a slow ownership read: %d %s", w.Code, w.Body.String())
+	}
+	if elapsed >= time.Second {
+		t.Fatalf("the ownership read was not bounded: %s", elapsed)
+	}
+}
+
+// TestTranscriptStreamEndsWhenTheClientDisconnects covers the client that
+// leaves: the handler returns and the subscription of the session is released.
+func TestTranscriptStreamEndsWhenTheClientDisconnects(t *testing.T) {
+	stream := newFakeStream()
+	h, broker, _ := newHandlerWithBroker(t, workingProvider{stream: stream})
+	if _, err := broker.Open(context.Background(), runID, 48000); err != nil {
+		t.Fatalf("the session did not open: %v", err)
+	}
+	session, live := broker.Session(runID)
+	if !live {
+		t.Fatal("the session is not live")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	request := httptest.NewRequest("GET", "/api/audio/runs/"+runID+"/transcript", nil).WithContext(ctx)
+	request.Header.Set("Authorization", "Bearer owner")
+	writer := &eventWriter{}
+	returned := make(chan struct{})
+	go func() {
+		h.ServeHTTP(writer, request)
+		close(returned)
+	}()
+	// The stream starts before the client leaves, so the subscription exists.
+	waitForStream(t, writer)
+	cancel()
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the handler did not return after the client disconnected")
+	}
+	if count := subscriberCount(session); count != 0 {
+		t.Fatalf("the subscription was not released: %d subscribers", count)
+	}
+}
+
+// TestTranscriptBudgetStaysBelowTheServerWriteTimeout keeps the phase before
+// the stream inside the window the server has to write the response.
+func TestTranscriptBudgetStaysBelowTheServerWriteTimeout(t *testing.T) {
+	if transcriptBudget >= 2*config.ConnectionTimeout {
+		t.Fatalf("the transcript route can outlive the write timeout of the server: %s", transcriptBudget)
+	}
+}
+
+// waitForStream waits until the route starts the event stream.
+func waitForStream(t *testing.T, writer *eventWriter) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for writer.status() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the stream did not start")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if writer.status() != 200 {
+		t.Fatalf("the stream did not start: %d", writer.status())
+	}
+}
+
+// subscriberCount reports how many subscribers the session still holds. The
+// field is unexported, so the test reads it with reflection.
+func subscriberCount(session *transcribe.Session) int {
+	return reflect.ValueOf(session).Elem().FieldByName("subscribers").Len()
 }

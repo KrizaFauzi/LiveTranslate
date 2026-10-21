@@ -4,11 +4,14 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"livetranslate/backend/internal/audio"
 	"livetranslate/backend/internal/auth"
 	"livetranslate/backend/internal/config"
 	"livetranslate/backend/internal/deepgram"
 	"livetranslate/backend/internal/health"
+	"livetranslate/backend/internal/meeting"
 	"livetranslate/backend/internal/sumopod"
+	"livetranslate/backend/internal/transcribe"
 	"net/http"
 	"os"
 )
@@ -51,5 +54,8 @@ func newHandler(c config.Config) http.Handler {
 	mux := http.NewServeMux()
 	health.RegisterRoutes(mux)
 	auth.RegisterRoutes(mux, c)
+	meeting.RegisterRoutes(mux, c)
+	broker := transcribe.NewBroker(c, nil)
+	audio.RegisterRoutes(mux, c, broker)
 	return mux
 }
