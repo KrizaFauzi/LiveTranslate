@@ -8,7 +8,7 @@ Antrean lama berasal dari sesi perpindahan ke Supabase HTTP API tanpa tool Obsid
 | --- | --- | --- |
 | docs/implementation/meeting-status.md | Proyek/LiveTranslate/Notes/2026-10-18-meeting-status.md | Pending; tool MCP Obsidian tidak tersedia |
 | docs/obsidian-pending/2026-10-18-tab-meeting-capture-brainstorm.md | Proyek/LiveTranslate/Notes/2026-10-18-tab-meeting-capture-brainstorm.md | Pending; tool MCP Obsidian tidak tersedia |
-| README.md | Proyek/LiveTranslate/Notes/Initialization README.md | Pending |
+| README.md | Proyek/LiveTranslate/Notes/Initialization README.md | Pending; diselaraskan dengan alur P0 saat ini, status selesai lokal, setup migration0001–0011, verification151/auth7/SQL/image, batas validasi produksi, dan tautan dokumentasi kanonis |
 | migration/README.md | Proyek/LiveTranslate/Notes/2026-10-18-auth-migrations.md | Pending; occurrence archive docs now cover manifest tamper verification, `partial_failed`, durable object cleanup worklist, and Storage API worker |
 | http/README.md | Proyek/LiveTranslate/Notes/2026-10-18-resterm-http-e2e.md | Pending |
 | docs/implementation/auth-status.md | Proyek/LiveTranslate/Notes/2026-10-18-auth-status.md | Pending |

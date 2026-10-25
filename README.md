@@ -1,11 +1,23 @@
 # LiveTranslate
 
-Chrome extension React dengan backend Go. Login/register memakai Supabase Auth; profile diambil dari PostgreSQL Supabase melalui Data API (PostgREST). Tidak ada service Node atau Drizzle pada backend.
+LiveTranslate adalah Chrome extension React dengan backend Go untuk transkripsi audio tab meeting, terjemahan langsung ke bahasa Indonesia, bantuan jawaban berbasis dokumen, dan arsip meeting permanen. Login/register memakai Supabase Auth; seluruh data aplikasi diakses melalui Supabase Data API dengan RLS owner-only. Tidak ada service Node, Drizzle, Redis, atau penyimpanan audio mentah.
 
 ```text
-Extension → Go /api/auth/* → Supabase Auth
-                         → Supabase Data API → public.profiles (RLS)
+Chrome extension (audio tab, tanpa mikrofon)
+  → backend Go
+      → Supabase Auth + Data API + private Storage
+      → Deepgram streaming transcription
+      → Sumopod translation dan evidence-only bilingual assistance
+  → staging occurrence 24 jam
+      → Simpan: arsip permanen
+      → Tidak: metadata dibuang dan object cleanup diantrikan
 ```
+
+## Status saat ini
+
+Paket P0 telah selesai dan diverifikasi secara lokal. Alur yang tersedia: tawaran koneksi meeting, capture atas persetujuan pengguna, transkrip dan terjemahan live, upload PDF/DOCX/XLSX/CSV per meeting, pemetaan pertanyaan, jawaban Indonesia/Inggris dengan kutipan, keputusan simpan/tidak setelah meeting, serta history/detail/export/delete arsip.
+
+Status belum production-ready. Migration `0006`–`0011`, Storage/Cron Supabase target, Chrome unpacked dengan `tabCapture` nyata, Sumopod nyata, matriks bahasa/latensi, soak test, dan restore drill masih perlu divalidasi. Status kanonis dan bukti terbaru ada di [feature roadmap](docs/implementation/feature-roadmap.md).
 
 ## Struktur backend
 
@@ -23,7 +35,7 @@ Backend dikelompokkan berdasarkan fitur di `backend/internal/`:
 ## Setup
 
 1. Jika `.env` belum ada, salin `.env.example`. Pertahankan nilai yang sudah diisi.
-2. Isi tiga konfigurasi Supabase berikut. `SUPABASE_URL` wajib HTTPS; HTTP hanya diterima untuk host loopback saat pengembangan lokal.
+2. Isi konfigurasi Supabase dan provider pada `.env`. `SUPABASE_URL` wajib HTTPS; HTTP hanya diterima untuk host loopback saat pengembangan lokal.
 3. Terapkan migration `0001` sampai `0011` sesuai urutan di [panduan migrasi](migration/README.md). Nomor `0006`–`0011` menerapkan occurrence, terjemahan, dokumen, assistance, arsip permanen, dan cleanup staging.
 4. Aktifkan Data API dengan schema `public` pada pengaturan API project.
 5. Tambahkan redirect yang sama pada Supabase → Authentication → URL Configuration → Redirect URLs.
@@ -88,17 +100,19 @@ docker compose down
 ## Verifikasi pengembangan
 
 ```bash
-(cd backend && go test ./... && go vet ./...)
+(cd backend && go test -race -count=1 -timeout=120s ./... && go vet ./...)
 (cd extension && npm test && npm run build)
 node --test --test-isolation=none http/auth.test.mjs
+sh migration/tests/check-meetings.sh
 docker compose config --quiet
+docker compose build
 ```
 
-Hasil pengujian dan batas verifikasi ada di [status implementasi](docs/implementation/auth-status.md).
+Baseline terakhir: backend race/vet dan kedua binary lulus, extension **151/151** beserta build lulus, auth contract **7/7** lulus, migration/RLS/concurrency harness lulus, production image berhasil dibangun, dan container aktual merespons `/health` serta `/ready`. Validasi ini lokal dan tidak menggantikan gate layanan nyata.
 
 ## Tab Meeting Capture
 
-Terapkan [migration/0002_meeting_sessions.sql](migration/0002_meeting_sessions.sql) setelah `0001`, build ulang backend/extension, lalu Reload extension melalui `chrome://extensions` dan setujui akses situs meeting. Service worker mendeteksi tab aktif pada jendela Chrome yang difokuskan tanpa perlu membuka popup. Popup menampilkan status sinkronisasi dan ID sesi.
+Setelah seluruh migration `0001`–`0011` diterapkan, build ulang backend/extension, Reload extension melalui `chrome://extensions`, dan setujui akses situs meeting. Service worker mendeteksi tab aktif pada jendela Chrome yang difokuskan tanpa perlu membuka popup. Popup menawarkan **Terhubung** atau **Nanti**, lalu menampilkan status sinkronisasi dan ID sesi.
 
 Provider yang didukung:
 
@@ -126,7 +140,7 @@ Aturan Chrome: [Tabs API](https://developer.chrome.com/docs/extensions/reference
 
 ## Audio Capture Meeting
 
-Terapkan [migration/0003_meeting_runs.sql](migration/0003_meeting_runs.sql) setelah `0002`, build ulang backend/extension, lalu Reload extension melalui `chrome://extensions`. Extension mendapat izin tambahan `tabCapture` dan `offscreen`; tidak ada akses mikrofon.
+Setelah seluruh migration diterapkan, build/reload backend dan extension. Extension memakai `tabCapture` dan dokumen `offscreen`; manifest tidak meminta akses mikrofon.
 
 Capture hanya berjalan setelah pengguna menekan "Mulai merekam" di popup dan hanya untuk tab meeting yang statusnya `registered`. Worker memilih meeting-nya sendiri, sehingga popup tidak dapat mengarahkan capture ke meeting lain. Audio diambil dari tab meeting dengan `chrome.tabCapture.getMediaStreamId` dan dokumen offscreen `USER_MEDIA`, lalu diambil sebagai PCM16 mono dari `AudioWorklet` (bukan `MediaRecorder`) dan diunggah berurutan sebagai frame biner 100 ms. Sample rate dikirim saat membuat run dan diteruskan ke Deepgram sebagai `encoding=linear16`.
 
@@ -190,26 +204,10 @@ Status dan bukti verifikasi ada di [status audio capture](docs/implementation/au
 
 API tambahan: `/api/occurrences/*`, `/api/documents`, `/api/questions`, `/api/archives`, dan `/api/audio/runs/{id}/translations`. Semua memakai JWT pengguna dan RLS owner-only. Setup cron, worker object cleanup, dan restore operator dijelaskan di [operator runbook](docs/implementation/operator-runbook.md).
 
-## Transkrip tersimpan dan timeline (F6)
-> **HISTORICAL — baseline F6 lama.** Bagian berikut dipertahankan sebagai riwayat implementasi retensi 30 hari dan bukan perilaku produk saat ini.
+## Dokumentasi lanjutan
 
-Sebelum mengaktifkan F6, terapkan berurutan [0004_transcript_segments.sql](migration/0004_transcript_segments.sql) dan [0005_transcript_retention_cron.sql](migration/0005_transcript_retention_cron.sql) setelah `0003`. Migration operasional membutuhkan **Supabase Cron / pg_cron** aktif; jangan menganggap retensi siap jika `0005` gagal. Lihat [aktivasi dan pemeriksaan scheduler](migration/README.md#transkrip-final-dan-retensi-f6), lalu build/restart backend serta build/reload extension.
-
-- Checkbox **Simpan transkrip final selama 30 hari** selalu default mati dan berlaku hanya untuk satu capture. Pilihan berikutnya tidak diwariskan. Audio tab tetap satu-satunya sumber; tidak ada mikrofon atau audio mentah tersimpan.
-- Final disimpan langsung dari backend, bukan dari popup atau cache live yang dibatasi 200 final. Penyimpanan berjalan walau popup ditutup. Partial tetap sementara.
-- Dalam kartu Transkrip, pilih run tersimpan untuk meeting aktif. Timeline memakai timestamp relatif dan paginasi; pilihan Live tetap terpisah.
-- **Ekspor JSON lengkap** membaca seluruh snapshot, termasuk lebih dari 200 final. File mencantumkan status lengkap/tidak lengkap; kegagalan halaman atau perubahan akun/pilihan tidak menghasilkan file sukses parsial.
-- **Hapus transkrip run ini** menghapus isi dan menolak penyimpanan final berikutnya untuk run yang sama, termasuk jika capture masih berjalan. Metadata meeting/run dan akuntansi capture tetap ada. Teks Live sementara dapat tetap terlihat, tetapi bukan arsip.
-- Retensi dihitung database dari awal capture, bukan dari terakhir dibaca/stop. Setelah 30 hari isi tidak dapat dibaca/ditulis; job tiap menit menghapus teks secara fisik. Gangguan scheduler dapat menunda purge fisik, bukan memperpanjang izin baca. Salinan ekspor pengguna serta kebijakan backup/PITR/provider berada di luar retensi aplikasi ini.
-- Kegagalan penyimpanan arsip saja tidak menghentikan transkripsi live; tampilkan `failed`/`incomplete`, bukan klaim sudah tersimpan. Gangguan provider atau jalur capture tetap mengikuti aturan F3/F4.
-
-| API (Bearer JWT) | Perilaku |
-| --- | --- |
-| `GET /api/audio/runs?meeting_id=<uuid>&limit=20&cursor=<cursor>` | Run opt-in pemilik yang belum deleted/expired; paginasi stabil, maksimal 100 per halaman |
-| `GET /api/audio/runs/{id}/segments?after_seq=0&limit=50` | Final tersimpan, metadata storage, `through_seq` snapshot dan `next_after_seq`; halaman selanjutnya mempertahankan `through_seq`, termasuk nilai 0 |
-| `DELETE /api/audio/runs/{id}/segments` | Hapus transkrip secara terminal dan idempoten; tidak menghapus run/meeting atau menghentikan capture |
-
-Tidak ada endpoint append teks dari extension. Backend memakai JWT pengguna yang juga dapat digunakan pemilik melalui Data API: RLS menjamin ownership/consent/retensi, bukan provenance provider atau keaslian percakapan terhadap pemilik akun sendiri. Seluruh respons arsip `no-store`; secret tetap di backend.
-
-Bukti dan batas penerapan: [status F6](docs/implementation/transcript-storage-status.md). Migration cloud dan capture melalui Chrome unpacked tetap memerlukan validasi operator; smoke lokal memakai provider/identitas terkontrol tanpa request berbayar.
+- [Feature roadmap dan status verifikasi](docs/implementation/feature-roadmap.md)
+- [Operator runbook](docs/implementation/operator-runbook.md)
+- [Panduan migration](migration/README.md)
+- [Master execution plan](docs/superpowers/plans/2026-10-24-execution-master.md)
 
