@@ -19,10 +19,11 @@ type transportFunc func(*http.Request) (*http.Response, error)
 func (f transportFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 const (
-	owner   = "11111111-2222-4333-8444-555555555555"
-	other   = "66666666-2222-4333-8444-555555555555"
-	meeting = "aaaaaaaa-2222-4333-8444-555555555555"
-	runID   = "bbbbbbbb-2222-4333-8444-555555555555"
+	owner        = "11111111-2222-4333-8444-555555555555"
+	other        = "66666666-2222-4333-8444-555555555555"
+	meeting      = "aaaaaaaa-2222-4333-8444-555555555555"
+	runID        = "bbbbbbbb-2222-4333-8444-555555555555"
+	occurrenceID = "abababab-2222-4333-8444-555555555555"
 	// orphanRun is a run of an earlier backend instance: the row is active but
 	// no transcription session is left for it.
 	orphanRun = "dddddddd-2222-4333-8444-555555555555"
@@ -245,8 +246,8 @@ func newHandlerWithBroker(t *testing.T, provider transcribe.Provider) (http.Hand
 		case r.URL.Path == "/rest/v1/meeting_runs" && r.Method == "POST":
 			runStatus = "active"
 			return jsonResponse(201, []map[string]any{{
-				"id": runID, "user_id": owner, "meeting_id": meeting, "status": "active",
-				"bytes_received": 0, "chunks_received": 0, "started_at": "2026-10-21T00:00:00Z", "ended_at": nil,
+				"id": runID, "user_id": owner, "meeting_id": meeting, "occurrence_id": occurrenceID, "status": "active",
+				"bytes_received": 0, "chunks_received": 0, "started_at": "2026-10-21T00:00:00Z", "ended_at": nil, "save_transcript": true, "transcript_state": "saving", "transcript_expires_at": "2099-01-01T00:00:00Z",
 			}}), nil
 		case r.URL.Path == "/rest/v1/meeting_runs" && r.Method == "PATCH":
 			var body map[string]string
@@ -254,8 +255,8 @@ func newHandlerWithBroker(t *testing.T, provider transcribe.Provider) (http.Hand
 			db.patchStatus = body["status"]
 			runStatus = body["status"]
 			return jsonResponse(200, []map[string]any{{
-				"id": runID, "user_id": owner, "meeting_id": meeting, "status": runStatus,
-				"bytes_received": bytesSeen, "chunks_received": chunksSeen, "started_at": "2026-10-21T00:00:00Z", "ended_at": nil,
+				"id": runID, "user_id": owner, "meeting_id": meeting, "occurrence_id": occurrenceID, "status": runStatus,
+				"bytes_received": bytesSeen, "chunks_received": chunksSeen, "started_at": "2026-10-21T00:00:00Z", "ended_at": nil, "save_transcript": true, "transcript_state": "saving", "transcript_expires_at": "2099-01-01T00:00:00Z",
 			}}), nil
 		case r.URL.Path == "/rest/v1/meeting_runs" && r.Method == "GET":
 			if err := slowPause(r.Context(), db.ownershipDelay); err != nil {
@@ -267,18 +268,18 @@ func newHandlerWithBroker(t *testing.T, provider transcribe.Provider) (http.Hand
 			switch r.URL.Query().Get("id") {
 			case "eq." + orphanRun:
 				return jsonResponse(200, []map[string]any{{
-					"id": orphanRun, "user_id": owner, "meeting_id": meeting, "status": "active",
-					"bytes_received": 0, "chunks_received": 0, "started_at": "2026-10-21T00:00:00Z", "ended_at": nil,
+					"id": orphanRun, "user_id": owner, "meeting_id": meeting, "occurrence_id": occurrenceID, "status": "active",
+					"bytes_received": 0, "chunks_received": 0, "started_at": "2026-10-21T00:00:00Z", "ended_at": nil, "save_transcript": true, "transcript_state": "saving", "transcript_expires_at": "2099-01-01T00:00:00Z",
 				}}), nil
 			case "eq." + stoppedRun:
 				return jsonResponse(200, []map[string]any{{
-					"id": stoppedRun, "user_id": owner, "meeting_id": meeting, "status": "stopped",
-					"bytes_received": 0, "chunks_received": 0, "started_at": "2026-10-21T00:00:00Z", "ended_at": "2026-10-21T00:01:00Z",
+					"id": stoppedRun, "user_id": owner, "meeting_id": meeting, "occurrence_id": occurrenceID, "status": "stopped",
+					"bytes_received": 0, "chunks_received": 0, "started_at": "2026-10-21T00:00:00Z", "ended_at": "2026-10-21T00:01:00Z", "save_transcript": true, "transcript_state": "saving", "transcript_expires_at": "2099-01-01T00:00:00Z",
 				}}), nil
 			case "eq." + runID:
 				return jsonResponse(200, []map[string]any{{
-					"id": runID, "user_id": owner, "meeting_id": meeting, "status": runStatus,
-					"bytes_received": bytesSeen, "chunks_received": chunksSeen, "started_at": "2026-10-21T00:00:00Z", "ended_at": nil,
+					"id": runID, "user_id": owner, "meeting_id": meeting, "occurrence_id": occurrenceID, "status": runStatus,
+					"bytes_received": bytesSeen, "chunks_received": chunksSeen, "started_at": "2026-10-21T00:00:00Z", "ended_at": nil, "save_transcript": true, "transcript_state": "saving", "transcript_expires_at": "2099-01-01T00:00:00Z",
 				}}), nil
 			}
 			return jsonResponse(200, []map[string]any{}), nil
@@ -294,8 +295,8 @@ func newHandlerWithBroker(t *testing.T, provider transcribe.Provider) (http.Hand
 			bytesSeen += int64(body.ChunkBytes)
 			chunksSeen++
 			return jsonResponse(200, []map[string]any{{
-				"id": runID, "user_id": owner, "meeting_id": meeting, "status": "active",
-				"bytes_received": bytesSeen, "chunks_received": chunksSeen, "started_at": "2026-10-21T00:00:00Z", "ended_at": nil,
+				"id": runID, "user_id": owner, "meeting_id": meeting, "occurrence_id": occurrenceID, "status": "active",
+				"bytes_received": bytesSeen, "chunks_received": chunksSeen, "started_at": "2026-10-21T00:00:00Z", "ended_at": nil, "save_transcript": true, "transcript_state": "saving", "transcript_expires_at": "2099-01-01T00:00:00Z",
 			}}), nil
 		case r.URL.Path == "/rest/v1/rpc/stop_audio_run":
 			if r.Header.Get("Authorization") != "Bearer owner" {
@@ -312,8 +313,8 @@ func newHandlerWithBroker(t *testing.T, provider transcribe.Provider) (http.Hand
 			if runStatus == "active" {
 				runStatus = "stopped"
 				return jsonResponse(200, []map[string]any{{
-					"id": runID, "user_id": owner, "meeting_id": meeting, "status": "stopped",
-					"bytes_received": bytesSeen, "chunks_received": chunksSeen, "started_at": "2026-10-21T00:00:00Z", "ended_at": "2026-10-21T00:01:00Z",
+					"id": runID, "user_id": owner, "meeting_id": meeting, "occurrence_id": occurrenceID, "status": "stopped",
+					"bytes_received": bytesSeen, "chunks_received": chunksSeen, "started_at": "2026-10-21T00:00:00Z", "ended_at": "2026-10-21T00:01:00Z", "save_transcript": true, "transcript_state": "saving", "transcript_expires_at": "2099-01-01T00:00:00Z",
 				}}), nil
 			}
 			return jsonResponse(200, []map[string]any{}), nil
@@ -322,11 +323,39 @@ func newHandlerWithBroker(t *testing.T, provider transcribe.Provider) (http.Hand
 	})}
 	broker := transcribe.NewBroker(config.Config{}, provider)
 	h := NewHandler(config.Config{SupabaseURL: "https://project.supabase.co", SupabaseKey: "sb_publishable_test"}, client, broker)
+	h.(*handler).now = func() time.Time { return time.Date(2026, 10, 21, 1, 0, 0, 0, time.UTC) }
 	return h, broker, db
+}
+
+func TestRunRequestRequiresOccurrenceAndRejectsLegacyArchiveConsent(t *testing.T) {
+	meetingID, gotOccurrence, rate, valid := parseRunRequest([]byte(`{"meeting_id":"` + meeting + `","occurrence_id":"` + occurrenceID + `","sample_rate":48000}`))
+	if !valid || meetingID != meeting || gotOccurrence != occurrenceID || rate != 48000 {
+		t.Fatalf("valid occurrence-bound request rejected: %q %q %d %v", meetingID, gotOccurrence, rate, valid)
+	}
+	for _, body := range []string{
+		`{"meeting_id":"` + meeting + `","sample_rate":48000}`,
+		`{"meeting_id":"` + meeting + `","occurrence_id":"` + occurrenceID + `","sample_rate":48000,"save_transcript":true}`,
+	} {
+		if _, _, _, accepted := parseRunRequest([]byte(body)); accepted {
+			t.Fatalf("legacy or unbound request accepted: %s", body)
+		}
+	}
 }
 
 func call(t *testing.T, h http.Handler, method, path, body, token, contentType string) *httptest.ResponseRecorder {
 	t.Helper()
+	if method == http.MethodPost && path == "/api/audio/runs" && contentType == "application/json" {
+		var input map[string]any
+		if json.Unmarshal([]byte(body), &input) == nil {
+			input["occurrence_id"] = occurrenceID
+			delete(input, "save_transcript")
+			encoded, err := json.Marshal(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body = string(encoded)
+		}
+	}
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
 	if contentType != "" {
 		r.Header.Set("Content-Type", contentType)
@@ -475,6 +504,19 @@ func TestChunkAccountingAndLimits(t *testing.T) {
 	}
 	if w := call(t, h, "POST", "/api/audio/runs/"+runID+"/chunks", "audio", "", "application/octet-stream"); w.Code != 401 {
 		t.Fatalf("unauthenticated chunk: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestChunkStopsRunAtFourHourLimit(t *testing.T) {
+	stream := newFakeStream()
+	h, _ := newHandler(t, workingProvider{stream: stream})
+	if w := call(t, h, "POST", "/api/audio/runs", `{"meeting_id":"`+meeting+`","sample_rate":48000}`, "owner", "application/json"); w.Code != 201 {
+		t.Fatalf("start: %d %s", w.Code, w.Body.String())
+	}
+	h.(*handler).now = func() time.Time { return time.Date(2026, 10, 21, 4, 0, 0, 0, time.UTC) }
+	w := call(t, h, "POST", "/api/audio/runs/"+runID+"/chunks", "audio", "owner", "application/octet-stream")
+	if w.Code != 409 || !strings.Contains(w.Body.String(), `"code":"occurrence_limit"`) || stream.writeCount() != 0 {
+		t.Fatalf("four-hour cap: %d %s writes=%d", w.Code, w.Body.String(), stream.writeCount())
 	}
 }
 
@@ -656,5 +698,65 @@ func TestChunkWithoutLiveSessionIsRejected(t *testing.T) {
 	}
 	if stream.writeCount() != 0 {
 		t.Fatalf("the chunk reached the provider: %d writes", stream.writeCount())
+	}
+}
+
+// TestProviderEndEvictsTheSessionAndFailsTheRun covers a provider that dies on
+// its own: the session leaves the broker and the run is marked failed, so the
+// chunk route answers with a closed run and the run does not stay active.
+func TestProviderEndEvictsTheSessionAndFailsTheRun(t *testing.T) {
+	stream := newFakeStream()
+	h, broker, db := newHandlerWithBroker(t, workingProvider{stream: stream})
+	started := call(t, h, "POST", "/api/audio/runs", `{"meeting_id":"`+meeting+`","sample_rate":48000}`, "owner", "application/json")
+	if started.Code != 201 {
+		t.Fatalf("start: %d %s", started.Code, started.Body.String())
+	}
+	if _, live := broker.Session(runID); !live {
+		t.Fatal("the session is not in the broker")
+	}
+	// The provider ends its stream: the session cannot continue.
+	close(stream.results)
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, live := broker.Session(runID); !live {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the dead session stayed in the broker")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	for db.lastPatchStatus() != "failed" {
+		if time.Now().After(deadline) {
+			t.Fatalf("the run was not marked failed: %q", db.lastPatchStatus())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// The chunk route answers with a closed run, not with a provider failure.
+	rejected := call(t, h, "POST", "/api/audio/runs/"+runID+"/chunks", "audio-bytes", "owner", "application/octet-stream")
+	if rejected.Code != 409 {
+		t.Fatalf("chunk after the provider died: %d %s", rejected.Code, rejected.Body.String())
+	}
+	if !strings.Contains(rejected.Body.String(), "run_closed") {
+		t.Fatalf("unexpected error code: %s", rejected.Body.String())
+	}
+}
+
+func TestDecodeOccurrenceRunAcceptsPermanentNullExpiry(t *testing.T) {
+	data := []byte(`[{"id":"aaaaaaaa-2222-4333-8444-555555555555","user_id":"11111111-2222-4333-8444-555555555555","meeting_id":"bbbbbbbb-2222-4333-8444-555555555555","occurrence_id":"cccccccc-2222-4333-8444-555555555555","status":"active","save_transcript":true,"transcript_state":"saving","transcript_expires_at":null}]`)
+	rows, failure := decodeRuns(data, "11111111-2222-4333-8444-555555555555")
+	if failure != nil || len(rows) != 1 || rows[0].TranscriptExpiresAt != "" {
+		t.Fatalf("permanent occurrence run rejected: rows=%+v failure=%+v", rows, failure)
+	}
+}
+
+func TestCreateRunMapsActiveOwnerConflict(t *testing.T) {
+	client := &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusConflict, map[string]string{"code": "23505"}), nil
+	})}
+	repo := newRepository(config.Config{SupabaseURL: "https://project.supabase.co", SupabaseKey: "sb_publishable_test"}, client)
+	_, failure := repo.create(context.Background(), meeting, occurrenceID, owner, "owner")
+	if failure == nil || failure.status != http.StatusConflict || failure.code != "active_run_exists" {
+		t.Fatalf("unexpected conflict mapping: %+v", failure)
 	}
 }

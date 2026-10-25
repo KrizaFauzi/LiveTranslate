@@ -1,5 +1,8 @@
-// The transcript state lives in the session storage of the extension: it belongs to one run and
-// never leaves the browser.
+// Live transcript state is bounded session-only display, never the source of saved history/export.
+
+// TRANSCRIPT_KEY is the key of the transcript state in the session storage. The document offscreen
+// writes it, the popup reads it, and the worker waits for it when a run is stopped.
+export const TRANSCRIPT_KEY = 'transcript_state'
 
 // At most 200 finals are kept, so a long meeting does not fill the storage of the browser.
 const FINAL_LIMIT = 200
@@ -14,8 +17,8 @@ export const TRANSCRIPT_STATUS = {
 
 // emptyState starts the transcript of one run: no segment, no text, and the run waits for the
 // first sound.
-export function emptyState(runId) {
-  return { run_id: runId, status: 'waiting', last_seq: 0, finals: [], partial: null }
+export function emptyState(runId, ownerId) {
+  return { owner_id: ownerId, run_id: runId, status: 'waiting', last_seq: 0, finals: [], partial: null }
 }
 
 // applySegment adds one segment to the state. A final replaces the partial that is running and

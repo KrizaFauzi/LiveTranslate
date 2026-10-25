@@ -1,5 +1,7 @@
 # Inisialisasi LiveTranslate — Handoff AI Agent
 
+> **HISTORICAL — Superseded by 2026-10-24 execution planning.** This document describes the initialization-only baseline and earlier pgx direction. See `2026-10-24-execution-master.md` and its detail files for the current design. Contents are preserved for history; do not execute.
+
 > Untuk AI Agent: kerjakan checklist berurutan. Jika tersedia, gunakan skill superpowers:executing-plans. Tugas ini hanya inisialisasi; berhenti setelah fondasi dan pemeriksaan service selesai.
 
 **Tujuan:** Menyiapkan extension React, BE Go, Docker Compose, serta koneksi Supabase, Deepgram, dan Sumopod.  

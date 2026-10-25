@@ -122,7 +122,7 @@ func TestTranscriptStreamEndsForStoppedRun(t *testing.T) {
 func TestTranscriptStreamPublishesSegments(t *testing.T) {
 	stream := newFakeStream()
 	h, broker, _ := newHandlerWithBroker(t, workingProvider{stream: stream})
-	if _, err := broker.Open(context.Background(), runID, 48000); err != nil {
+	if _, err := broker.Open(context.Background(), runID, 48000, nil); err != nil {
 		t.Fatalf("the session did not open: %v", err)
 	}
 	stream.results <- transcribe.Result{Text: "selamat pagi", IsFinal: true, Start: 1.5, Duration: 0.4, Language: "id"}
@@ -152,7 +152,7 @@ func TestTranscriptStreamPublishesSegments(t *testing.T) {
 func TestTranscriptStreamSkipsTheSegmentsBeforeSince(t *testing.T) {
 	stream := newFakeStream()
 	h, broker, _ := newHandlerWithBroker(t, workingProvider{stream: stream})
-	if _, err := broker.Open(context.Background(), runID, 48000); err != nil {
+	if _, err := broker.Open(context.Background(), runID, 48000, nil); err != nil {
 		t.Fatalf("the session did not open: %v", err)
 	}
 	stream.results <- transcribe.Result{Text: "segmen satu", IsFinal: false}
@@ -180,19 +180,73 @@ func TestTranscriptStreamSkipsTheSegmentsBeforeSince(t *testing.T) {
 func TestTranscriptStreamReportsProviderFailure(t *testing.T) {
 	stream := newFakeStream()
 	h, broker, _ := newHandlerWithBroker(t, workingProvider{stream: stream})
-	if _, err := broker.Open(context.Background(), runID, 48000); err != nil {
+	session, err := broker.Open(context.Background(), runID, 48000, nil)
+	if err != nil {
 		t.Fatalf("the session did not open: %v", err)
 	}
+	writer := &eventWriter{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.ServeHTTP(writer, streamRequest("/api/audio/runs/"+runID+"/transcript", "owner"))
+	}()
+	// The stream is open when the provider fails, like the client of the extension.
+	waitForSubscribers(t, session, 1)
 	stream.errors <- errors.New("rahasia provider")
-	w := call(t, h, "GET", "/api/audio/runs/"+runID+"/transcript", "", "owner", "")
-	if w.Code != 200 {
-		t.Fatalf("stream: %d %s", w.Code, w.Body.String())
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the stream did not end")
 	}
-	if !strings.Contains(w.Body.String(), "event: error") || !strings.Contains(w.Body.String(), "transcript_error") {
-		t.Fatalf("the failure was not reported: %s", w.Body.String())
+	body := writer.content()
+	if writer.status() != 200 {
+		t.Fatalf("stream: %d %s", writer.status(), body)
 	}
-	if strings.Contains(w.Body.String(), "rahasia provider") {
-		t.Fatalf("the detail of the provider leaked: %s", w.Body.String())
+	if !strings.Contains(body, "event: error") || !strings.Contains(body, "transcript_error") {
+		t.Fatalf("the failure was not reported: %s", body)
+	}
+	if strings.Contains(body, "rahasia provider") {
+		t.Fatalf("the detail of the provider leaked: %s", body)
+	}
+}
+
+// TestTranscriptStreamReportsTheFailureThatEndedTheProvider covers a provider
+// that fails and ends its stream at the same time: the stream reports the
+// failure instead of a clean end, because the transcription really failed.
+func TestTranscriptStreamReportsTheFailureThatEndedTheProvider(t *testing.T) {
+	stream := newFakeStream()
+	h, broker, _ := newHandlerWithBroker(t, workingProvider{stream: stream})
+	session, err := broker.Open(context.Background(), runID, 48000, nil)
+	if err != nil {
+		t.Fatalf("the session did not open: %v", err)
+	}
+	writer := &eventWriter{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.ServeHTTP(writer, streamRequest("/api/audio/runs/"+runID+"/transcript", "owner"))
+	}()
+	waitForSubscribers(t, session, 1)
+	// The provider ends its stream and reports the failure right after it.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		stream.errors <- errors.New("rahasia provider")
+	}()
+	close(stream.results)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the stream did not end")
+	}
+	body := writer.content()
+	if !strings.Contains(body, "event: error") {
+		t.Fatalf("the failure was reported as a clean end: %s", body)
+	}
+	if strings.Contains(body, "event: end") {
+		t.Fatalf("the failure was reported as a clean end: %s", body)
+	}
+	if strings.Contains(body, "rahasia provider") {
+		t.Fatalf("the detail of the provider leaked: %s", body)
 	}
 }
 
@@ -202,7 +256,7 @@ func TestTranscriptStreamReportsProviderFailure(t *testing.T) {
 func TestTranscriptStreamSurvivesTheServerWriteTimeout(t *testing.T) {
 	stream := newFakeStream()
 	h, broker, _ := newHandlerWithBroker(t, workingProvider{stream: stream})
-	if _, err := broker.Open(context.Background(), runID, 48000); err != nil {
+	if _, err := broker.Open(context.Background(), runID, 48000, nil); err != nil {
 		t.Fatalf("the session did not open: %v", err)
 	}
 	server := httptest.NewUnstartedServer(h)
@@ -262,7 +316,7 @@ func TestTranscriptStreamBoundsTheOwnershipRead(t *testing.T) {
 	defer func() { transcriptBudget = original }()
 	stream := newFakeStream()
 	h, broker, db := newHandlerWithBroker(t, workingProvider{stream: stream})
-	if _, err := broker.Open(context.Background(), runID, 48000); err != nil {
+	if _, err := broker.Open(context.Background(), runID, 48000, nil); err != nil {
 		t.Fatalf("the session did not open: %v", err)
 	}
 	db.slowOwnership(2 * time.Second)
@@ -289,7 +343,7 @@ func TestTranscriptStreamBoundsTheOwnershipRead(t *testing.T) {
 func TestTranscriptStreamEndsWhenTheClientDisconnects(t *testing.T) {
 	stream := newFakeStream()
 	h, broker, _ := newHandlerWithBroker(t, workingProvider{stream: stream})
-	if _, err := broker.Open(context.Background(), runID, 48000); err != nil {
+	if _, err := broker.Open(context.Background(), runID, 48000, nil); err != nil {
 		t.Fatalf("the session did not open: %v", err)
 	}
 	session, live := broker.Session(runID)

@@ -32,3 +32,17 @@ footer p { margin: 4px 0; color: #63718b; font-size: 11px; }
 .secondary { width: 100%; background: #eef2f8; color: #314362; margin-top: 12px; }
 
 .meeting-link, .meeting-id { overflow-wrap: anywhere; font-size: 12px; }
+
+.card + .card { margin-top: 14px; }
+.consent { margin-top: 14px; }
+.consent span { display: flex; align-items: flex-start; gap: 8px; line-height: 1.5; }
+.consent input { flex: 0 0 auto; width: 16px; height: 16px; margin: 2px 0 0; }
+.storage-choice { color: #314362; font-size: 12px; }
+.transcript-selector { margin-top: 14px; }
+select { width: 100%; margin-top: 6px; padding: 9px; border: 1px solid #cbd5e5; border-radius: 7px; background: white; color: #17233b; font: inherit; }
+.timeline { list-style: none; padding: 0; margin: 12px 0; max-height: 340px; overflow-y: auto; }
+.timeline li { display: flex; align-items: baseline; gap: 10px; border-top: 1px solid #eef2f8; padding: 8px 0; }
+.timeline time { flex: 0 0 auto; color: #63718b; font-size: 11px; font-variant-numeric: tabular-nums; }
+.timeline p { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.archive-actions { margin-bottom: 12px; }
+.danger { color: #a12c36; background: #fff0f0; }

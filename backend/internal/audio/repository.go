@@ -9,6 +9,7 @@ import (
 	"livetranslate/backend/internal/config"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 type repository struct {
@@ -35,9 +36,9 @@ func newRepository(c config.Config, client *http.Client) repository {
 	return repository{base, c.SupabaseKey, &copied, err}
 }
 
-const columns = "id,user_id,meeting_id,status,bytes_received,chunks_received,started_at,ended_at"
+const columns = "id,user_id,meeting_id,occurrence_id,status,bytes_received,chunks_received,started_at,ended_at,save_transcript,transcript_state,transcript_expires_at"
 
-// send performs one Data API call. Audio bytes never reach this layer; only run metadata is stored.
+// send performs one bounded Data API call; audio bytes never reach this layer.
 func (repo repository) send(ctx context.Context, method, path string, query url.Values, body any, token string) ([]byte, *failure) {
 	if repo.configErr != nil {
 		return nil, &failure{503, "supabase_config", repo.configErr.Error()}
@@ -72,15 +73,17 @@ func (repo repository) send(ctx context.Context, method, path string, query url.
 		return nil, &failure{status, "audio_unreachable", "Database run audio tidak dapat dijangkau."}
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil || len(data) >= 1<<20 {
+	data, err := io.ReadAll(io.LimitReader(resp.Body, (8<<20)+1))
+	if err != nil || len(data) > 8<<20 {
 		return nil, &failure{502, "audio_response_invalid", "Respons database run audio tidak valid."}
 	}
 	switch resp.StatusCode {
 	case 401:
 		return nil, &failure{401, "unauthorized", "Sesi tidak valid. Silakan masuk kembali."}
-	case 404, 409:
+	case 404:
 		return nil, &failure{404, "not_found", "Sesi meeting tidak ditemukan."}
+	case 409:
+		return nil, &failure{409, "active_run_exists", "Akun ini masih memiliki capture aktif."}
 	}
 	if resp.StatusCode != 200 && resp.StatusCode != 201 {
 		return nil, &failure{502, "audio_api_error", "Akses database run audio gagal. Periksa migrasi 0003, grants, dan RLS."}
@@ -93,9 +96,27 @@ func decodeRuns(data []byte, user string) ([]Run, *failure) {
 	if json.Unmarshal(data, &rows) != nil {
 		return nil, &failure{502, "audio_response_invalid", "Respons database run audio tidak valid."}
 	}
-	for _, row := range rows {
-		if row.UserID != user || !uuidPattern.MatchString(row.ID) {
+	for i := range rows {
+		row := &rows[i]
+		if row.UserID != user || !uuidPattern.MatchString(row.ID) || !uuidPattern.MatchString(row.MeetingID) || !uuidPattern.MatchString(row.OccurrenceID) {
 			return nil, &failure{502, "audio_response_invalid", "Respons database run audio tidak valid."}
+		}
+		if !row.SaveTranscript && row.TranscriptState == "" {
+			row.TranscriptState = "disabled"
+		}
+		switch row.TranscriptState {
+		case "disabled", "saving", "saved", "failed", "deleted":
+		default:
+			return nil, archiveInvalid()
+		}
+		if row.SaveTranscript {
+			if row.TranscriptExpiresAt != "" {
+				if _, err := time.Parse(time.RFC3339Nano, string(row.TranscriptExpiresAt)); err != nil {
+					return nil, archiveInvalid()
+				}
+			}
+		} else if row.TranscriptState != "disabled" && row.TranscriptState != "deleted" {
+			return nil, archiveInvalid()
 		}
 	}
 	return rows, nil
@@ -116,8 +137,8 @@ func (repo repository) meetingOwned(ctx context.Context, meetingID, token string
 	return len(rows) == 1 && rows[0].ID == meetingID, nil
 }
 
-func (repo repository) create(ctx context.Context, meetingID, user, token string) (Run, *failure) {
-	body := map[string]string{"user_id": user, "meeting_id": meetingID}
+func (repo repository) create(ctx context.Context, meetingID, occurrenceID, user, token string) (Run, *failure) {
+	body := map[string]any{"user_id": user, "meeting_id": meetingID, "occurrence_id": occurrenceID, "save_transcript": true}
 	data, err := repo.send(ctx, "POST", "/rest/v1/meeting_runs", url.Values{"select": {columns}}, body, token)
 	if err != nil {
 		return Run{}, err
@@ -126,7 +147,7 @@ func (repo repository) create(ctx context.Context, meetingID, user, token string
 	if err != nil {
 		return Run{}, err
 	}
-	if len(rows) != 1 || rows[0].MeetingID != meetingID {
+	if len(rows) != 1 || rows[0].MeetingID != meetingID || rows[0].OccurrenceID != occurrenceID || !rows[0].SaveTranscript {
 		return Run{}, &failure{502, "audio_response_invalid", "Respons database run audio tidak valid."}
 	}
 	return rows[0], nil
@@ -140,6 +161,9 @@ func (repo repository) get(ctx context.Context, id, user, token string) (Run, bo
 	rows, err := decodeRuns(data, user)
 	if err != nil {
 		return Run{}, false, err
+	}
+	if len(rows) > 1 || len(rows) == 1 && rows[0].ID != id {
+		return Run{}, false, archiveInvalid()
 	}
 	if len(rows) == 0 {
 		return Run{}, false, nil
@@ -158,6 +182,9 @@ func (repo repository) appendChunk(ctx context.Context, id string, size int, use
 	if err != nil {
 		return Run{}, false, err
 	}
+	if len(rows) > 1 || len(rows) == 1 && rows[0].ID != id {
+		return Run{}, false, archiveInvalid()
+	}
 	if len(rows) == 0 {
 		return Run{}, false, nil
 	}
@@ -171,8 +198,12 @@ func (repo repository) markFailed(ctx context.Context, id, user, token string) *
 	if err != nil {
 		return err
 	}
-	if _, err := decodeRuns(data, user); err != nil {
+	rows, err := decodeRuns(data, user)
+	if err != nil {
 		return err
+	}
+	if len(rows) > 1 || len(rows) == 1 && rows[0].ID != id {
+		return archiveInvalid()
 	}
 	return nil
 }
@@ -187,6 +218,9 @@ func (repo repository) stopRun(ctx context.Context, id, user, token string) (Run
 	rows, err := decodeRuns(data, user)
 	if err != nil {
 		return Run{}, false, err
+	}
+	if len(rows) > 1 || len(rows) == 1 && rows[0].ID != id {
+		return Run{}, false, archiveInvalid()
 	}
 	if len(rows) == 0 {
 		return repo.get(ctx, id, user, token)

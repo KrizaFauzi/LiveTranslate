@@ -72,6 +72,28 @@ func TestPublicMeetingRoutesAreRegistered(t *testing.T) {
 	}
 }
 
+func TestPublicOccurrenceRoutesAreRegistered(t *testing.T) {
+	handler := newHandler(config.Config{SupabaseURL: "https://project.supabase.co", SupabaseKey: "sb_publishable_test"})
+	for _, route := range []struct{ method, path string }{
+		{"POST", "/api/occurrences/connect"},
+		{"POST", "/api/occurrences/aaaaaaaa-2222-4333-8444-555555555555/activate"},
+		{"POST", "/api/occurrences/aaaaaaaa-2222-4333-8444-555555555555/finish"},
+		{"POST", "/api/occurrences/aaaaaaaa-2222-4333-8444-555555555555/archive"},
+		{"POST", "/api/occurrences/aaaaaaaa-2222-4333-8444-555555555555/discard"},
+		{"GET", "/api/occurrences/aaaaaaaa-2222-4333-8444-555555555555"},
+	} {
+		t.Run(route.path, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(route.method, route.path, strings.NewReader("{}"))
+			req.Header.Set("Content-Type", "application/json")
+			handler.ServeHTTP(w, req)
+			if w.Code != 401 || w.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("route %s must require a session: %d %s", route.path, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
 // The capture routes have to be mounted on the mux, so a client without a
 // session gets the session error instead of a missing route.
 func TestPublicAudioRoutesAreRegistered(t *testing.T) {
@@ -89,5 +111,27 @@ func TestPublicAudioRoutesAreRegistered(t *testing.T) {
 				t.Fatalf("route %s must ask for a session instead of missing: %d %s", route.path, w.Code, w.Body.String())
 			}
 		})
+	}
+}
+
+func TestP0ProductRoutesAreRegistered(t *testing.T) {
+	handler := newHandler(config.Config{SupabaseURL: "https://project.supabase.co", SupabaseKey: "sb_publishable_test"})
+	for _, route := range []struct{ method, path string }{
+		{"POST", "/api/documents"},
+		{"GET", "/api/questions?occurrence_id=aaaaaaaa-2222-4333-8444-555555555555"},
+		{"GET", "/api/archives"},
+		{"GET", "/api/archives/aaaaaaaa-2222-4333-8444-555555555555/export"},
+		{"GET", "/api/audio/runs/11111111-2222-4333-8444-555555555555/translations"},
+	} {
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequest(route.method, route.path, nil))
+		if w.Code != 401 {
+			t.Fatalf("route %s must require a session: %d %s", route.path, w.Code, w.Body.String())
+		}
+	}
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest("GET", "/ready", nil))
+	if w.Code != 503 || !strings.Contains(w.Body.String(), `"ready":false`) {
+		t.Fatalf("unconfigured readiness: %d %s", w.Code, w.Body.String())
 	}
 }

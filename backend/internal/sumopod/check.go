@@ -14,6 +14,12 @@ import (
 	"strings"
 )
 
+func ValidEndpoint(raw string) bool {
+	u, err := url.Parse(strings.TrimRight(raw, "/"))
+	return err == nil && u.Scheme == "https" && u.Host == "ai.sumopod.com" && u.User == nil &&
+		u.RawQuery == "" && u.Fragment == "" && u.Path == "/v1"
+}
+
 func Check(ctx context.Context, c config.Config) error {
 	if err := config.Require("SUMOPOD_API_KEY", c.SumopodKey); err != nil {
 		return err
@@ -21,8 +27,7 @@ func Check(ctx context.Context, c config.Config) error {
 	if err := config.Require("SUMOPOD_MODEL", c.SumopodModel); err != nil {
 		return err
 	}
-	u, err := url.Parse(c.SumopodBaseURL)
-	if err != nil || u.Scheme != "https" || u.Host != "ai.sumopod.com" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || strings.TrimRight(u.Path, "/") != "/v1" {
+	if !ValidEndpoint(c.SumopodBaseURL) {
 		return errors.New("SUMOPOD_BASE_URL wajib https://ai.sumopod.com/v1")
 	}
 	payload, err := json.Marshal(struct {

@@ -1,5 +1,7 @@
 # Transkripsi Live Meeting — Implementation Plan
 
+> **HISTORICAL — Superseded by 2026-10-24 execution planning.** This plan remains evidence for the implemented capture/transcription baseline, but its product constraints were replaced by occurrence lifecycle, translation, and post-meeting archive consent. See `2026-10-24-details/03-realtime-extension.md`; do not re-execute this plan.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Mengubah capture audio F3 menjadi PCM16 dan mengirimkannya ke Deepgram secara streaming, lalu menampilkan transkrip partial dan final di popup tanpa menyimpan audio maupun transkrip.

@@ -18,4 +18,5 @@ docker run --rm -i --network none --tmpfs /var/lib/postgresql \
       sleep 1
     done
     psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -f /migrations/tests/run_all.sql
+    sh /migrations/tests/transcript_concurrency.sh
   ' < /dev/null

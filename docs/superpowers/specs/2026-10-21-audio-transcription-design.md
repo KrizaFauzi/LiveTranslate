@@ -1,11 +1,12 @@
 # Desain transkripsi live LiveTranslate
 
+> **HISTORICAL — Superseded by 2026-10-24 execution planning (03-realtime-extension.md).** This spec describes transcription design before occurrence lifecycle and post-meeting consent. See `docs/superpowers/plans/2026-10-24-details/03-realtime-extension.md` for current design. Contents preserved for history; do not execute.
+
 Tanggal: 2026-10-21.
-Status: rancangan untuk persetujuan pengguna; belum diimplementasikan.
+Status: arsip desain F4 yang telah diimplementasikan; lihat status audio untuk bukti dan batas validasi. Requirement tanpa penyimpanan transkrip pada dokumen ini adalah scope F4 sebelum F6, bukan larangan terhadap arsip opt-in F6.
 Sumber lokal: docs/superpowers/specs/2026-10-21-audio-transcription-design.md.
 Dasar: docs/implementation/feature-roadmap.md (fase F4), docs/implementation/audio-status.md (F3), hasil spike streaming Deepgram 2026-10-21.
 
-## Tujuan dan cakupan
 
 Dari audio tab meeting yang sudah tertangkap pada F3, LiveTranslate menghasilkan transkrip live berbahasa otomatis yang tampil di popup dan dapat dibaca pengguna.
 
@@ -205,7 +206,7 @@ Aturan SSE:
 - `transcript_state` milik satu `run_id`. Run baru mengosongkan state lama.
 - Token 401 saat membuka SSE: dokumen offscreen meminta token baru ke worker lewat pesan `audio.token` yang sudah ada, lalu membuka SSE lagi satu kali. Kegagalan kedua menandai status `transcript_error`.
 - Popup membaca `transcript_state` dari `chrome.storage.session` dan menampilkan `finals` berurutan lalu `partial` terakhir. Teks kosong diabaikan.
-- Saat run berhenti, worker mengirim `audio.capture.stop` ke dokumen offscreen; dokumen menutup recorder dan SSE, menandai status `transcribed`, dan menyimpan final terakhir.
+- Saat run berhenti, worker menutup run di server lebih dulu (`POST /api/audio/runs/{id}/stop`): `Finalize()` provider mendorong segmen final melalui stream SSE yang masih terbuka di dokumen offscreen. Worker lalu menunggu transkrip berakhir sebelum mengirim `audio.capture.stop` ke dokumen offscreen; dokumen menutup recorder dan SSE, menandai status `transcribed`, dan menyimpan final terakhir.
 - Bila service worker di-restart saat capture berjalan, dokumen offscreen tetap hidup dan stream SSE tetap berjalan. Worker yang di-restart membaca `audio_status` dari `chrome.storage.session` untuk tahu bahwa capture masih berjalan.
 
 ## Status yang terlihat pengguna
@@ -216,7 +217,9 @@ Aturan SSE:
 | Segmen diterima | `transcribing` | Transkrip live ditampilkan |
 | Deepgram gagal | `transcript_error` | Transkripsi gagal. Capture dihentikan |
 | Run ditutup | `transcribed` | Transkrip selesai |
-| Backend mati | `transcript_unreachable` | Backend tidak dapat dijangkau |
+| Backend mati | `transcript_error` | Gagal terhubung ke server transkrip. Capture dihentikan |
+
+Catatan status: rancangan awal memakai `transcript_unreachable` ("Backend tidak dapat dijangkau") untuk backend yang mati, tetapi status itu tidak pernah diimplementasikan. Yang benar-benar dilaporkan extension adalah `transcript_error`: stream transkrip gagal dibuka atau terputus, jadi capture dihentikan. Kegagalan upload yang sementara (backend mati saat chunk dikirim) tidak mengubah status transkrip; audio berlubang dan capture berlanjut. Lihat `docs/implementation/audio-status.md` untuk selisih ini.
 
 ## Konfigurasi
 
@@ -230,7 +233,7 @@ Aturan SSE:
 
 ## Batasan dan biaya
 
-- Streaming Deepgram berbayar per durasi audio. Capture hanya berjalan setelah pengguna menekan tombol, dan berhenti saat pengguna menekan tombol berhenti, tab ditutup, pengguna logout, atau transkripsi gagal.
+- Streaming Deepgram berbayar per durasi audio. Capture hanya berjalan setelah pengguna menekan tombol, dan berhenti saat pengguna menekan tombol berhenti, tab ditutup, pengguna logout, transkripsi gagal, atau backend menolak run secara terminal (409 atau 502). Kesalahan jaringan sementara tidak menghentikan capture.
 - `meeting_runs` menyimpan akuntansi byte dan chunk, sehingga usage provider bisa diaudit tanpa menyimpan audio.
 - Batas ukuran: 2 MiB per chunk, 1 GiB per run.
 - Tidak ada request berbayar saat startup, saat build, atau saat test otomatis.

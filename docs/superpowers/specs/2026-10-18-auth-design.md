@@ -1,5 +1,7 @@
 # Desain login dan register LiveTranslate
 
+> **HISTORICAL — Superseded by 2026-10-24 execution planning.** This document describes the earlier Node/Drizzle auth architecture. See `../plans/2026-10-24-execution-master.md` and its architecture/data detail for the current design. Contents are preserved for history; do not execute.
+
 Tanggal: 2026-10-18.
 Status: arsitektur dan skema disetujui pengguna; perintah "Jalankan" setelah review mengotorisasi implementasi. Bukti dan batas verifikasi dicatat di docs/implementation/auth-status.md.
 Sumber lokal: docs/superpowers/specs/2026-10-18-auth-design.md.

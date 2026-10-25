@@ -12,6 +12,15 @@ CREATE TABLE IF NOT EXISTS public.meeting_runs (
   ended_at timestamptz
 );
 CREATE INDEX IF NOT EXISTS meeting_runs_user_started_idx ON public.meeting_runs(user_id, started_at DESC);
+-- Database arbitration prevents concurrent browser profiles/devices from opening two captures.
+WITH ranked AS (
+  SELECT id,row_number() OVER(PARTITION BY user_id ORDER BY started_at DESC,id DESC) position
+  FROM public.meeting_runs WHERE status='active'
+)
+UPDATE public.meeting_runs r SET status='failed',ended_at=COALESCE(r.ended_at,clock_timestamp())
+FROM ranked x WHERE r.id=x.id AND x.position>1;
+CREATE UNIQUE INDEX IF NOT EXISTS meeting_runs_one_active_owner_idx
+  ON public.meeting_runs(user_id) WHERE status='active';
 ALTER TABLE public.meeting_runs ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON public.meeting_runs FROM PUBLIC, anon, authenticated;
 GRANT SELECT ON public.meeting_runs TO authenticated;

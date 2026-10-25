@@ -2,6 +2,7 @@ package transcribe
 
 import (
 	"context"
+	"errors"
 	"livetranslate/backend/internal/config"
 	"sync"
 	"time"
@@ -18,6 +19,9 @@ type Broker struct {
 	mu       sync.Mutex
 	sessions map[string]*Session
 	provider Provider
+	// onProviderEnd is called when the provider ends a session on its own: the
+	// run of that session cannot continue, so its owner has to close it.
+	onProviderEnd func(runID string)
 }
 
 // NewBroker creates a broker. A nil provider falls back to the Deepgram provider.
@@ -29,7 +33,16 @@ func NewBroker(cfg config.Config, provider Provider) *Broker {
 }
 
 // Open starts the live transcription of one run.
-func (b *Broker) Open(ctx context.Context, runID string, sampleRate int) (*Session, error) {
+func (b *Broker) Open(ctx context.Context, runID string, sampleRate int, sink FinalSink) (*Session, error) {
+	b.mu.Lock()
+	if _, exists := b.sessions[runID]; exists {
+		b.mu.Unlock()
+		return nil, errors.New("run already has a live transcription")
+	}
+	// Reserve the identity before the provider handshake, without holding the
+	// broker mutex across network I/O.
+	b.sessions[runID] = nil
+	b.mu.Unlock()
 	// The provider connection must outlive the request that opens it, so the
 	// session owns its own context: it keeps the values of the caller but
 	// neither its deadline nor its cancellation. The session ends the context
@@ -38,13 +51,48 @@ func (b *Broker) Open(ctx context.Context, runID string, sampleRate int) (*Sessi
 	stream, err := openProvider(sessionCtx, b.provider, sampleRate)
 	if err != nil {
 		cancel()
+		b.Remove(runID)
 		return nil, err
 	}
-	session := NewSession(stream, cancel)
+	session := NewSession(stream, cancel, sink)
 	b.mu.Lock()
 	b.sessions[runID] = session
 	b.mu.Unlock()
+	go b.watch(runID, session)
 	return session, nil
+}
+
+// watch drops the session of a run whose provider ended on its own. The session
+// stays in the broker with a dead connection otherwise, so the chunk route
+// keeps answering with a provider failure instead of a closed run.
+func (b *Broker) watch(runID string, session *Session) {
+	<-session.Ended()
+	if !session.ProviderEnded() {
+		// The owner closed the session: the stop route closes the run.
+		return
+	}
+	b.mu.Lock()
+	current, ok := b.sessions[runID]
+	handler := b.onProviderEnd
+	if !ok || current != session {
+		// Another session took the run over: it is alive, so nothing is dropped.
+		handler = nil
+	} else {
+		delete(b.sessions, runID)
+	}
+	b.mu.Unlock()
+	if handler != nil {
+		handler(runID)
+	}
+}
+
+// OnProviderEnd registers the handler that is called when the provider ends a
+// session on its own. The handler closes the run of that session, because the
+// run cannot continue without a transcription.
+func (b *Broker) OnProviderEnd(handler func(runID string)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.onProviderEnd = handler
 }
 
 // openProvider opens the provider stream within the handshake budget. The
@@ -87,7 +135,7 @@ func (b *Broker) Session(runID string) (*Session, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	session, ok := b.sessions[runID]
-	return session, ok
+	return session, ok && session != nil
 }
 
 // Remove drops the session of one run.

@@ -1,6 +1,6 @@
 # Audio Capture Meeting — status implementasi
 
-Tanggal: 2026-10-21. Fitur F3 selesai secara lokal dan terverifikasi live di sisi backend/database. Fitur F4 (transkripsi streaming) selesai secara lokal pada 2026-10-22 dan jalur server-nya terverifikasi live pada 2026-10-22 terhadap container dan akun Deepgram nyata; hasil verifikasinya tercatat di bagian "Verifikasi F4" dan "Verifikasi live F4". Pemeriksaan manual Chrome belum dijalankan karena lingkungan ini tidak memiliki binary Chrome.
+Catatan F3/F4: implementasi dan bukti live backend/provider bertanggal 2026-10-21–22 tetap dicatat di bawah sebagai riwayat. Capture melalui Chrome unpacked belum terbukti end-to-end. Pada kelanjutan F6, popup sudah dijalankan di Chromium terkelola dengan bridge Chrome/provider/identitas terkontrol, bukan capture native atau Supabase cloud. Perilaku penyimpanan terbaru dan bukti F6 ada di [status transkrip tersimpan](transcript-storage-status.md); tabel verifikasi bertanggal 2026-10-22 bukan klaim hasil sesi F6.
 
 ## Keputusan yang dipakai
 
@@ -10,7 +10,7 @@ Empat keputusan pengguna mengunci desain:
 | --- | --- |
 | Sumber audio | Audio tab meeting saja; mikrofon pengguna tidak diakses |
 | Persetujuan | Capture hanya berjalan setelah pengguna menekan tombol di popup |
-| Retensi | Audio tidak disimpan; backend meneruskan dan membuang byte, hanya metadata run yang disimpan |
+| Retensi | Audio mentah tidak disimpan; metadata run tetap ada. F6 menambah penyimpanan final opt-in per capture, default mati, selama 30 hari; bukan perubahan sumber audio |
 | Semantik meeting | `meeting_id` tetap identitas link; setiap capture membuat `meeting_run_id` baru |
 
 Implikasi consent: extension tidak pernah menangkap audio tanpa aksi eksplisit pengguna. Popup menampilkan status capture dan jumlah chunk/byte.
@@ -24,24 +24,29 @@ Implikasi consent: extension tidak pernah menangkap audio tanpa aksi eksplisit p
 - Potongan audio diunggah berurutan ke `POST /api/audio/runs/{id}/chunks`; antrean upload satu per satu mencegah penumpukan. Maksimal 50 frame (5 detik) menunggu backend; frame yang lebih baru dibuang saat antrean penuh.
 - Byte audio tidak lagi dibuang di backend: byte diteruskan ke sesi streaming Deepgram milik run tersebut, lalu byte-nya sendiri tidak disimpan.
 - Backend menghitung byte dan chunk secara atomik di database lewat fungsi `append_audio_chunk`, sehingga chunk paralel tidak saling menimpa.
-- Audio tidak pernah ditulis ke storage: byte diukur lalu diteruskan ke provider, lalu dibuang. Transkrip juga tidak ditulis ke storage; backlog segmen hanya hidup di memori backend.
-- Capture berhenti saat pengguna menekan "Berhenti merekam", tab meeting ditutup, pengguna logout, terjadi error, atau transkripsi gagal.
+- Audio tidak ditulis ke storage: byte diukur lalu diteruskan ke provider dan dibuang. Partial dan backlog live tetap sementara; sejak F6, final hanya disimpan jika run memilih `save_transcript=true`, dengan retensi 30 hari dan penghapusan terminal per run.
+- Capture berhenti saat pengguna menekan "Berhenti merekam", tab meeting ditutup, pengguna logout, transkripsi gagal, atau backend menolak run secara terminal: 409 `run_closed`, 502 `deepgram_unreachable`, atau token yang tidak dapat diperbarui. Penolakan terminal itu menghentikan capture dan menutup run di server.
+- Kesalahan jaringan sementara (backend tidak dapat dijangkau, request timeout) tidak menghentikan capture: audio berlubang, capture terus berjalan, dan laporan failure dibatasi rate-nya supaya backend yang mati tidak membanjiri worker.
 - Respons 401 saat upload memicu permintaan token baru ke worker satu kali, lalu chunk dikirim ulang.
+- Saat run dihentikan, worker menutup run di server lebih dulu: `Finalize()` provider mendorong segmen final melalui stream SSE yang masih terbuka di dokumen offscreen. Baru setelah transkrip berakhir dokumen offscreen ditutup, jadi segmen final tidak hilang. Jendela tunggu final di backend mengikuti anggaran tutup route stop (10 s).
+- Bila provider berhenti sendiri, backend mengeluarkan sesi dari broker dan menandai run `failed`, jadi route chunk menjawab 409 `run_closed` (bukan 502) dan run tidak menggantung sebagai `active`.
+- Kegagalan provider dilaporkan ke klien sebagai event `error`, bukan `end`: terminal error dicatat sebelum channel subscriber ditutup, jadi transkripsi yang gagal tidak pernah tampil sebagai "Transkrip selesai".
+- Status lama `transcript_unreachable` tidak dipakai: kegagalan stream transkrip dilaporkan sebagai `transcript_error`. Kegagalan penyimpanan arsip F6 berbeda dari kegagalan provider/capture; lihat status arsip `saving`/`saved`/`failed`/`incomplete`/`deleted`/`expired`.
 
 ## Kontrak API
 
 | Method | Path | Auth | Hasil |
 | --- | --- | --- | --- |
-| POST | `/api/audio/runs` | Bearer | 201 `{run}`; body `{"meeting_id":"<uuid>","sample_rate":48000}`; 400 bila `sample_rate` tidak positif; 503 `deepgram_config` bila konfigurasi provider kosong; 502 `deepgram_unreachable` bila sesi provider gagal dibuka (run ditandai `failed`) |
+| POST | `/api/audio/runs` | Bearer | 201 `{run,storage}`; body `{"meeting_id":"<uuid>","sample_rate":48000,"save_transcript":false}`; pilihan simpan optional/default false dan harus boolean; konfigurasi/kegagalan provider tetap mengikuti F4 |
 | POST | `/api/audio/runs/{id}/chunks` | Bearer | 200 `{run}`; body biner, `application/octet-stream`; 409 bila run sudah ditutup |
 | POST | `/api/audio/runs/{id}/stop` | Bearer | 200 `{run}`; idempoten; memfinalisasi sesi provider dulu |
 | GET | `/api/audio/runs/{id}/transcript` | Bearer | SSE; query `?since=<seq>`; event `segment`, `end`, `error`; 404 bila run tidak ada atau milik akun lain; 503 `transcript_unavailable` bila run aktif tanpa sesi live |
 
-Kolom run: `id`, `user_id`, `meeting_id`, `status` (`active`/`stopped`/`failed`), `bytes_received`, `chunks_received`, `started_at`, `ended_at`.
+Kolom capture run tetap `id`, `user_id`, `meeting_id`, `status` (`active`/`stopped`/`failed`), `bytes_received`, `chunks_received`, `started_at`, `ended_at`; F6 menambah `save_transcript`, `transcript_state`, dan `transcript_expires_at`. Status capture dan status arsip adalah dua hal berbeda.
 
 ## Batas
 
-- Transkripsi sudah aktif (F4): byte audio diteruskan ke Deepgram dari backend. Yang belum ada adalah penyimpanan transkrip (DEC-05), terjemahan, dan bantuan AI.
+- Transkripsi F4 tersedia; F6 menambah arsip transkrip final opt-in, timeline popup, hapus dan ekspor JSON. Terjemahan dan bantuan AI belum termasuk. Validasi Chrome unpacked/provider nyata tetap terpisah dari smoke F6 dengan fixture lokal.
 - Batas ukuran: 2 MiB per chunk, 1 GiB per run.
 - Izin extension bertambah: `tabCapture` dan `offscreen`. Tidak ada `audioCapture` dan tidak ada akses mikrofon.
 - Audio hanya dapat ditangkap pada halaman yang ada di `host_permissions` (Google Meet, Zoom, Jitsi) dan backend.

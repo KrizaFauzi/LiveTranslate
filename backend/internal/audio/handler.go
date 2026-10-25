@@ -5,13 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"livetranslate/backend/internal/assistance"
 	"livetranslate/backend/internal/auth"
 	"livetranslate/backend/internal/config"
+	"livetranslate/backend/internal/sumopod"
 	"livetranslate/backend/internal/transcribe"
 	"mime"
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -19,7 +23,8 @@ const (
 	// maxChunkBytes bounds one uploaded audio chunk.
 	maxChunkBytes = 2 << 20
 	// maxRunBytes bounds the total streamed volume of one run.
-	maxRunBytes = 1 << 30
+	maxRunBytes    = 1 << 30
+	maxRunDuration = 4 * time.Hour
 )
 
 // The budgets of the capture routes. The server writes the response within
@@ -35,14 +40,19 @@ var (
 	// route.
 	ownershipBudget = 5 * time.Second
 	// closeBudget bounds the wait for the session close of the stop route.
-	// Session.Close has a worst case of about 10.5 seconds (provider finalize
-	// 5 s, flush window 0.5 s, teardown 5 s), so the close gets its own budget
+	// Session.Close has a worst case of about 20 seconds (provider finalize
+	// 5 s, flush window 10 s, teardown 5 s), so the close gets its own budget
 	// on a context detached from the request deadline: a request-scoped
 	// deadline would cancel the close halfway and the final segment would be lost.
+	// A close that needs longer than the budget finishes in the background, and
+	// the final segment still reaches the subscriber of the open stream.
 	closeBudget = 10 * time.Second
 	// bookkeepingBudget bounds the run bookkeeping of the stop route. It runs
 	// while the session closes, so the two budgets do not add up.
 	bookkeepingBudget = 10 * time.Second
+	// stopMetadataBudget keeps the final archive metadata read inside the
+	// server write window: 5 s ownership + 10 s close/bookkeeping + 1 s read.
+	stopMetadataBudget = time.Second
 )
 
 var uuidPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -61,9 +71,29 @@ func writeFailure(w http.ResponseWriter, e *failure) {
 // handler serves the capture-run API. It holds the run repository, the
 // transcription broker, and the token verifier shared by every route.
 type handler struct {
-	repo   repository
-	broker *transcribe.Broker
-	verify func(context.Context, string) (string, *auth.VerificationError)
+	repo       repository
+	broker     *transcribe.Broker
+	verify     func(context.Context, string) (string, *auth.VerificationError)
+	translator *sumopod.Client
+	config     config.Config
+	client     *http.Client
+	// owners remembers the user and the token of every open run, so a run whose
+	// provider died can be closed without the client asking for it.
+	mu      sync.Mutex
+	owners  map[string]runOwner
+	tickets atomic.Uint64
+	now     func() time.Time
+}
+
+// runOwner is the account that started a run, with the token that proves it.
+type runOwner struct {
+	user           string
+	token          string
+	ticket         uint64
+	writer         *transcriptWriter
+	translator     *translationWorker
+	assistant      *assistance.Worker
+	cleanupStarted bool
 }
 
 // NewHandler serves the capture-run API. The uploaded audio is forwarded to the
@@ -72,7 +102,126 @@ func NewHandler(c config.Config, client *http.Client, broker *transcribe.Broker)
 	if broker == nil {
 		broker = transcribe.NewBroker(c, nil)
 	}
-	return &handler{repo: newRepository(c, client), broker: broker, verify: auth.NewUserVerifier(c, client)}
+	h := &handler{repo: newRepository(c, client), broker: broker, translator: sumopod.NewClient(c, client), config: c, client: client, verify: auth.NewUserVerifier(c, client), owners: map[string]runOwner{}, now: time.Now}
+	// A session whose provider died leaves a run that cannot continue: the run
+	// is closed here, so it does not stay active forever.
+	broker.OnProviderEnd(h.markRunFailed)
+	return h
+}
+
+// rememberOwner seeds storage before provider supervision can publish a final.
+func (h *handler) rememberOwner(run Run, token string, ticket uint64) *transcriptWriter {
+	var writer *transcriptWriter
+	var translator *translationWorker
+	var assistant *assistance.Worker
+	if run.SaveTranscript {
+		translator = newTranslationWorker(h.repo, run, token, h.translator)
+		assistant = assistance.New(h.config, h.client, assistance.Run{ID: run.ID, UserID: run.UserID, MeetingID: run.MeetingID, OccurrenceID: run.OccurrenceID}, token)
+		writer = newTranscriptWriterWithCallback(h.repo, run, token, ticket, func(segment transcribe.Segment) {
+			translator.enqueue(segment)
+			assistant.Enqueue(segment)
+		})
+	}
+	h.mu.Lock()
+	h.owners[run.ID] = runOwner{user: run.UserID, token: token, ticket: ticket, writer: writer, translator: translator, assistant: assistant}
+	h.mu.Unlock()
+	return writer
+}
+
+func (h *handler) refreshOwner(runID, user, token string, ticket uint64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	owner, ok := h.owners[runID]
+	if !ok || owner.user != user || ticket <= owner.ticket {
+		return
+	}
+	owner.token = token
+	owner.ticket = ticket
+	if owner.writer != nil {
+		owner.writer.refresh(user, token, ticket)
+	}
+	if owner.translator != nil {
+		owner.translator.refresh(user, token)
+	}
+	if owner.assistant != nil {
+		owner.assistant.Refresh(user, token)
+	}
+	h.owners[runID] = owner
+}
+
+// releaseOwner retains verified credentials until finalization and storage drain
+// have ended, bounded by the same 30-second budget used by the writer.
+func (h *handler) releaseOwner(runID string, session *transcribe.Session, closed <-chan struct{}) {
+	h.mu.Lock()
+	owner, ok := h.owners[runID]
+	if !ok || owner.cleanupStarted {
+		h.mu.Unlock()
+		return
+	}
+	owner.cleanupStarted = true
+	h.owners[runID] = owner
+	h.mu.Unlock()
+	go func() {
+		timer := time.NewTimer(transcriptDrainBudget)
+		defer timer.Stop()
+		if closed != nil {
+			select {
+			case <-closed:
+			case <-timer.C:
+				if session != nil {
+					session.Abort()
+				}
+				if owner.writer != nil {
+					owner.writer.mu.Lock()
+					owner.writer.failLocked()
+					owner.writer.mu.Unlock()
+				}
+				h.dropOwner(runID)
+				return
+			}
+		}
+		if owner.writer != nil {
+			select {
+			case <-owner.writer.done:
+			case <-timer.C:
+				owner.writer.mu.Lock()
+				owner.writer.failLocked()
+				owner.writer.mu.Unlock()
+			}
+		}
+		if owner.translator != nil {
+			owner.translator.close()
+		}
+		if owner.assistant != nil {
+			owner.assistant.Close()
+		}
+		h.dropOwner(runID)
+	}()
+}
+
+func (h *handler) dropOwner(runID string) {
+	h.mu.Lock()
+	delete(h.owners, runID)
+	h.mu.Unlock()
+}
+
+func (h *handler) markRunFailed(runID string) {
+	h.mu.Lock()
+	owner, ok := h.owners[runID]
+	h.mu.Unlock()
+	if !ok {
+		return
+	}
+	h.failRun(runID, owner.user, owner.token)
+	// The broker invokes this only after actual session termination; the
+	// session has already finished its final sink.
+	h.releaseOwner(runID, nil, nil)
+}
+
+func (h *handler) failRun(runID, user, token string) {
+	ctx, cancel := context.WithTimeout(context.Background(), failureBudget)
+	defer cancel()
+	_ = h.repo.markFailed(ctx, runID, user, token)
 }
 
 // ServeHTTP routes the capture API. Every route builds its own context, so the
@@ -83,6 +232,14 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case path == "/api/audio/runs" && r.Method == "POST":
 		h.start(w, r)
+	case path == "/api/audio/runs" && r.Method == "GET":
+		h.listArchives(w, r)
+	case strings.HasPrefix(path, "/api/audio/runs/") && strings.HasSuffix(runPath, "/translations") && r.Method == "GET":
+		h.readTranslations(w, r, strings.TrimSuffix(runPath, "/translations"))
+	case strings.HasPrefix(path, "/api/audio/runs/") && strings.HasSuffix(runPath, "/segments") && r.Method == "GET":
+		h.readArchive(w, r, strings.TrimSuffix(runPath, "/segments"))
+	case strings.HasPrefix(path, "/api/audio/runs/") && strings.HasSuffix(runPath, "/segments") && r.Method == "DELETE":
+		h.deleteArchive(w, r, strings.TrimSuffix(runPath, "/segments"))
 	case strings.HasSuffix(runPath, "/chunks") && r.Method == "POST":
 		h.chunk(w, r, strings.TrimSuffix(runPath, "/chunks"))
 	case strings.HasSuffix(runPath, "/stop") && r.Method == "POST":
@@ -117,6 +274,7 @@ func identify(ctx context.Context, verify func(context.Context, string) (string,
 // start creates the run row and opens the transcription session of the run. The
 // row comes first, so a session that cannot be opened leaves a run marked failed.
 func (h *handler) start(w http.ResponseWriter, r *http.Request) {
+	ticket := h.tickets.Add(1)
 	// The identification, the ownership read, and the run row share one budget,
 	// so the route reaches the handshake of the provider in time. The handshake
 	// itself has its own budget inside the broker.
@@ -142,9 +300,9 @@ func (h *handler) start(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, &failure{400, "invalid_input", "Kirim meeting_id dan sample_rate yang valid."})
 		return
 	}
-	meetingID, sampleRate, valid := parseRunRequest(data)
+	meetingID, occurrenceID, sampleRate, valid := parseRunRequest(data)
 	if !valid {
-		writeFailure(w, &failure{400, "invalid_input", "Kirim meeting_id dan sample_rate yang valid."})
+		writeFailure(w, &failure{400, "invalid_input", "Kirim meeting_id, occurrence_id, dan sample_rate yang valid."})
 		return
 	}
 	owned, err := h.repo.meetingOwned(ctx, meetingID, token)
@@ -160,12 +318,24 @@ func (h *handler) start(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, &failure{503, "deepgram_config", "Konfigurasi transkripsi belum lengkap."})
 		return
 	}
-	run, err := h.repo.create(ctx, meetingID, user, token)
+	run, err := h.repo.create(ctx, meetingID, occurrenceID, user, token)
 	if err != nil {
 		writeFailure(w, err)
 		return
 	}
-	if _, openErr := h.broker.Open(ctx, run.ID, sampleRate); openErr != nil {
+	writer := h.rememberOwner(run, token, ticket)
+	var sink transcribe.FinalSink
+	if writer != nil {
+		sink = writer
+	}
+	if _, openErr := h.broker.Open(ctx, run.ID, sampleRate, sink); openErr != nil {
+		if writer != nil {
+			writer.mu.Lock()
+			writer.failLocked()
+			writer.mu.Unlock()
+			writer.Finish()
+		}
+		h.releaseOwner(run.ID, nil, nil)
 		// The failed run is marked on a context of its own, so a provider that
 		// used up the whole request budget still leaves the run marked failed.
 		failedCtx, cancelFailed := context.WithTimeout(context.WithoutCancel(r.Context()), failureBudget)
@@ -178,32 +348,40 @@ func (h *handler) start(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, &failure{502, "deepgram_unreachable", "Layanan transkripsi tidak dapat dijangkau."})
 		return
 	}
-	writeJSON(w, 201, map[string]any{"run": run})
+	run = h.withStorage(run)
+	writeJSON(w, 201, map[string]any{"run": run, "storage": run.Storage})
 }
 
 // parseRunRequest reads the body of a run creation. The sample rate is required
 // because the provider needs it to decode the PCM16 stream.
-func parseRunRequest(data []byte) (string, int, bool) {
+func parseRunRequest(data []byte) (string, string, int, bool) {
 	var raw map[string]json.RawMessage
-	if json.Unmarshal(data, &raw) != nil || len(raw) != 2 {
-		return "", 0, false
+	if json.Unmarshal(data, &raw) != nil || len(raw) != 3 {
+		return "", "", 0, false
 	}
-	var meetingID string
-	value, ok := raw["meeting_id"]
-	if !ok || json.Unmarshal(value, &meetingID) != nil || !uuidPattern.MatchString(meetingID) {
-		return "", 0, false
+	for key := range raw {
+		if key != "meeting_id" && key != "occurrence_id" && key != "sample_rate" {
+			return "", "", 0, false
+		}
 	}
-	var sampleRate int
-	rate, ok := raw["sample_rate"]
-	if !ok || json.Unmarshal(rate, &sampleRate) != nil || sampleRate <= 0 {
-		return "", 0, false
+	var meetingID, occurrenceID string
+	if json.Unmarshal(raw["meeting_id"], &meetingID) != nil || !uuidPattern.MatchString(meetingID) {
+		return "", "", 0, false
 	}
-	return meetingID, sampleRate, true
+	if json.Unmarshal(raw["occurrence_id"], &occurrenceID) != nil || !uuidPattern.MatchString(occurrenceID) {
+		return "", "", 0, false
+	}
+	var rate int
+	if json.Unmarshal(raw["sample_rate"], &rate) != nil || rate <= 0 {
+		return "", "", 0, false
+	}
+	return meetingID, occurrenceID, rate, true
 }
 
 // chunk forwards the uploaded audio to the transcription session of the run and
 // accounts the bytes. The audio itself is never stored.
 func (h *handler) chunk(w http.ResponseWriter, r *http.Request, runID string) {
+	ticket := h.tickets.Add(1)
 	ctx, cancel := context.WithTimeout(r.Context(), config.ConnectionTimeout)
 	defer cancel()
 	user, token, err := identify(ctx, h.verify, r)
@@ -242,8 +420,15 @@ func (h *handler) chunk(w http.ResponseWriter, r *http.Request, runID string) {
 		writeFailure(w, &failure{404, "not_found", "Run capture tidak ditemukan."})
 		return
 	}
+	h.refreshOwner(runID, user, token, ticket)
 	if run.Status != "active" {
 		writeFailure(w, &failure{409, "run_closed", "Run capture sudah ditutup."})
+		return
+	}
+	startedAt, parseErr := time.Parse(time.RFC3339Nano, run.StartedAt)
+	if parseErr != nil || !startedAt.Add(maxRunDuration).After(h.now()) {
+		h.failRun(runID, user, token)
+		writeFailure(w, &failure{409, "occurrence_limit", "Batas durasi meeting empat jam tercapai."})
 		return
 	}
 	if run.BytesReceived+int64(len(payload)) > maxRunBytes {
@@ -252,6 +437,9 @@ func (h *handler) chunk(w http.ResponseWriter, r *http.Request, runID string) {
 	}
 	session, live := h.broker.Session(runID)
 	if !live {
+		// The session is gone: the run cannot continue, so it is closed here
+		// instead of staying active forever.
+		h.failRun(runID, user, token)
 		writeFailure(w, &failure{409, "run_closed", "Run capture sudah ditutup."})
 		return
 	}
@@ -268,12 +456,14 @@ func (h *handler) chunk(w http.ResponseWriter, r *http.Request, runID string) {
 		writeFailure(w, &failure{409, "run_closed", "Run capture sudah ditutup."})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"run": updated})
+	updated = h.withStorage(updated)
+	writeJSON(w, 200, map[string]any{"run": updated, "storage": updated.Storage})
 }
 
 // stop closes the transcription session of the run, marks the run stopped, and
 // drops the session from the broker.
 func (h *handler) stop(w http.ResponseWriter, r *http.Request, runID string) {
+	ticket := h.tickets.Add(1)
 	// The identification and the ownership read share one budget, so the close
 	// phase starts at the latest after that budget.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), ownershipBudget)
@@ -298,6 +488,13 @@ func (h *handler) stop(w http.ResponseWriter, r *http.Request, runID string) {
 		writeFailure(w, &failure{404, "not_found", "Run capture tidak ditemukan."})
 		return
 	}
+	h.refreshOwner(runID, user, token, ticket)
+	h.mu.Lock()
+	owner, owned := h.owners[runID]
+	h.mu.Unlock()
+	if owned && owner.writer != nil {
+		owner.writer.beginDrain()
+	}
 	session, live := h.broker.Session(runID)
 	// The close runs on a context detached from the request deadline, because it
 	// can take longer than the request budget and the final segment must survive.
@@ -309,6 +506,7 @@ func (h *handler) stop(w http.ResponseWriter, r *http.Request, runID string) {
 	bookCtx, cancelBook := context.WithTimeout(context.WithoutCancel(r.Context()), bookkeepingBudget)
 	defer cancelBook()
 	closed := closeSession(session)
+	h.releaseOwner(runID, session, closed)
 	run, found, err := h.repo.stopRun(bookCtx, runID, user, token)
 	select {
 	case <-closed:
@@ -327,7 +525,29 @@ func (h *handler) stop(w http.ResponseWriter, r *http.Request, runID string) {
 		writeFailure(w, &failure{404, "not_found", "Run capture tidak ditemukan."})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"run": run})
+	// Capture bookkeeping can return before the writer acknowledges its last
+	// final. Refresh that row without depending on the live owner map surviving
+	// cleanup, while preserving terminal delete/expiry returned by the DB.
+	metadataUnavailable := false
+	if run.SaveTranscript && run.TranscriptState == "saving" {
+		metadataCtx, cancelMetadata := context.WithTimeout(context.WithoutCancel(r.Context()), stopMetadataBudget)
+		latest, exists, metadataErr := h.repo.get(metadataCtx, runID, user, token)
+		cancelMetadata()
+		if metadataErr == nil && exists {
+			run = latest
+		} else {
+			// Capture stop was already acknowledged. Archive metadata failure
+			// must not turn it into an error and bypass the client's final wait.
+			metadataUnavailable = true
+		}
+	}
+	metadata := h.storageWithWriter(run, owner.writer)
+	if metadataUnavailable && metadata.Complete {
+		metadata.State = "incomplete"
+		metadata.Complete = false
+	}
+	run.Storage = &metadata
+	writeJSON(w, 200, map[string]any{"run": run, "storage": metadata})
 }
 
 // closeSession ends the transcription session of one run in the background. The

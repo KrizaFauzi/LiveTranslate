@@ -15,8 +15,8 @@ import (
 // lasts as long as the client keeps the connection open.
 var transcriptBudget = 5 * time.Second
 
-// transcript streams the transcript of one run as Server-Sent Events. The
-// segments live in the memory of the session, so no transcript is ever stored.
+// transcript streams live in-memory segments as Server-Sent Events. Durable
+// opt-in finals are written separately and read through the archive API.
 // The phase before the stream has its own budget, and the stream itself runs
 // on the context of the request, so it lasts as long as the client keeps the
 // connection open.

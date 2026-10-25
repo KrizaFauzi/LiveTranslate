@@ -10,6 +10,12 @@ DO $$ BEGIN
   IF (SELECT count(*) FROM public.meeting_runs) <> 1 THEN RAISE EXCEPTION 'run not created'; END IF;
   IF (SELECT user_id FROM public.meeting_runs) <> auth.uid() THEN RAISE EXCEPTION 'run owner mismatch'; END IF;
 END $$;
+DO $$ BEGIN
+  BEGIN
+    INSERT INTO public.meeting_runs(user_id,meeting_id) SELECT auth.uid(),id FROM own_session;
+    RAISE EXCEPTION 'second active owner run was accepted';
+  EXCEPTION WHEN unique_violation THEN NULL; END;
+END $$;
 SELECT * FROM public.append_audio_chunk((SELECT id FROM public.meeting_runs), 100);
 SELECT * FROM public.append_audio_chunk((SELECT id FROM public.meeting_runs), 50);
 DO $$ BEGIN

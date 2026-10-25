@@ -1,20 +1,23 @@
 import { toMonoPcm16, frameSizeFor } from './pcm16.js'
 import { openTranscriptStream } from './transcript-stream.js'
-import { applySegment, applyStatus, emptyState } from './transcript-state.js'
+import { applySegment, applyStatus, emptyState, TRANSCRIPT_KEY } from './transcript-state.js'
 
 const WORKLET_FILE = 'pcm-worklet.js'
 const WORKLET_NODE = 'pcm-capture'
 const CHUNK_MILLISECONDS = 100
 const PREFERRED_SAMPLE_RATE = 48000
-// The transcript lives in the session storage of the browser: it is never written to a file and
-// never leaves the browser.
-const TRANSCRIPT_KEY = 'transcript_state'
 // At most 50 frames (5 seconds of audio) wait for the backend. Newer frames are dropped and
 // reported instead of growing the queue without bound.
 const MAX_PENDING_FRAMES = 50
 const REQUEST_TIMEOUT_MS = 10000
 const TOKEN_TIMEOUT_MS = 5000
 const STOP_DRAIN_TIMEOUT_MS = 5000
+// A terminal answer of the backend ends the run: the run is closed there, so the capture of that
+// run cannot continue. A network error is not terminal: the audio has a hole, but the run lives.
+const TERMINAL_STATUSES = new Set([409, 502])
+// The failures of the upload are rate limited: a backend that refuses every frame would send one
+// message per frame, and the worker does not need that many.
+const ERROR_INTERVAL_MS = 5000
 
 export function createOffscreenCapture({
   chromeApi = globalThis.chrome,
@@ -26,6 +29,7 @@ export function createOffscreenCapture({
   maxPendingFrames = MAX_PENDING_FRAMES,
   tokenTimeoutMs = TOKEN_TIMEOUT_MS,
   stopDrainTimeoutMs = STOP_DRAIN_TIMEOUT_MS,
+  errorIntervalMs = ERROR_INTERVAL_MS,
 } = {}) {
   let stream = null
   let audioContext = null
@@ -44,24 +48,47 @@ export function createOffscreenCapture({
   // The transcription failed: the capture stops, so the failures that follow are not reported
   // again.
   let transcriptFailed = false
+  // The backend refused the run for good: the capture stops and the worker closes the run.
+  let terminal = false
+  // Once stop begins no new server request may be scheduled. The separate flush phase first
+  // disconnects the recorder and drains already-queued audio while this flag is still false.
+  let stopping = false
+  // The time of the last failure report, so the failures of a dead backend are rate limited.
+  let lastErrorAt = 0
   // Every change of the transcript state is a read-modify-write cycle, so the changes run one
   // after another: a segment never overwrites the one before it.
   let stateQueue = Promise.resolve()
 
   // The progress report is fire and forget: it waits for the service worker to wake up, so it
   // must never sit in the upload chain.
-  function report() {
-    return chromeApi.runtime.sendMessage({ type: 'audio.progress', input: { chunks, bytes, dropped } }).catch(() => {})
+  function report(target = run) {
+    if (target !== run) return Promise.resolve()
+    return chromeApi.runtime.sendMessage({ type: 'audio.progress', input: { owner_id: target.ownerId, run_id: target.id, chunks, bytes, dropped } }).catch(() => {})
   }
 
   // reportError sends a failure to the worker. The source tells the worker what failed: a failed
-  // upload only degrades the capture, a failed transcription stops it.
+  // upload only degrades the capture, a failed transcription stops it, and a terminal answer of the
+  // backend ends the run.
   //
   // A failure of the upload after the transcription failed is not reported again: the capture is
   // stopping because of the transcription, and the worker already knows about it.
-  function reportError(message, source) {
+  //
+  // The failures of the upload are rate limited: a backend that refuses every frame would send one
+  // message per frame, and the worker does not need that many.
+  function reportError(message, source, target = run) {
+    if (target !== run) return Promise.resolve()
     if (source !== 'transcript' && transcriptFailed) return Promise.resolve()
-    return chromeApi.runtime.sendMessage({ type: 'audio.error', input: { message, source } }).catch(() => {})
+    if (source === 'upload' && !allowErrorReport()) return Promise.resolve()
+    return chromeApi.runtime.sendMessage({ type: 'audio.error', input: { owner_id: target.ownerId, run_id: target.id, message, source } }).catch(() => {})
+  }
+
+  // allowErrorReport keeps the rate limit of the failure reports: the first failure of a run is
+  // reported right away, the next ones only after the interval has passed.
+  function allowErrorReport() {
+    const now = Date.now()
+    if (now - lastErrorAt < errorIntervalMs) return false
+    lastErrorAt = now
+    return true
   }
 
   // The transcript state lives in the session storage: the popup reads it while the capture runs.
@@ -74,9 +101,10 @@ export function createOffscreenCapture({
   // updateState applies one change to the transcript state. The changes run one after another, so
   // a segment never overwrites the one before it. A state without a run is not published: nothing
   // was transcribed for it.
-  function updateState(change) {
+  function updateState(change, target = run) {
     stateQueue = stateQueue.then(async () => {
-      transcriptState = change(transcriptState ?? emptyState(null))
+      if (target !== run) return
+      transcriptState = change(transcriptState ?? emptyState(target.id, target.ownerId))
       if (!transcriptState.run_id) return
       await writeState(transcriptState)
     }).catch(() => {})
@@ -87,6 +115,7 @@ export function createOffscreenCapture({
   // and asks for the segments the client already has, so a replayed backlog is not shown twice.
   function openTranscript(input) {
     const base = (input.base_url || '').replace(/\/$/, '')
+    const target = run
     const controller = new AbortController()
     transcriptController = controller
     openTranscriptStream({
@@ -94,21 +123,22 @@ export function createOffscreenCapture({
       token: input.token,
       signal: controller.signal,
       fetchImpl,
-      requestToken: () => requestToken(),
-      onSegment: segment => { updateState(state => applySegment(state, segment)) },
-      onEnd: () => { updateState(state => applyStatus(state, 'transcribed')) },
+      requestToken: () => requestToken(target),
+      onSegment: segment => { updateState(state => applySegment(state, segment), target) },
+      onEnd: () => { updateState(state => applyStatus(state, 'transcribed'), target) },
       onError: message => {
+        if (target !== run) return
         transcriptFailed = true
-        updateState(state => applyStatus(state, 'transcript_error', message))
+        updateState(state => applyStatus(state, 'transcript_error', message), target)
         // The worker owns the run, so it has to learn that the transcription failed: the capture
         // stops with it.
-        reportError(message, 'transcript')
+        reportError(message, 'transcript', target)
       },
-    }).catch(() => reportError('Gagal menyimpan transkrip.'))
+    }).catch(() => reportError('Gagal membaca transkrip.', 'transcript', target))
   }
 
-  async function sendChunk(buffer, token) {
-    return fetchImpl(`${run.baseUrl.replace(/\/$/, '')}/api/audio/runs/${run.id}/chunks`, {
+  async function sendChunk(buffer, token, target) {
+    return fetchImpl(`${target.baseUrl.replace(/\/$/, '')}/api/audio/runs/${target.id}/chunks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream', Authorization: `Bearer ${token}` },
       body: buffer,
@@ -119,12 +149,12 @@ export function createOffscreenCapture({
 
   // The service worker has to answer within the bound: an unanswered request would freeze the
   // upload chain for good.
-  async function requestToken() {
+  async function requestToken(target = run) {
     let timer
     const timeout = new Promise(resolve => { timer = setTimeout(() => resolve(null), tokenTimeoutMs) })
     try {
-      const refreshed = await Promise.race([chromeApi.runtime.sendMessage({ type: 'audio.token' }), timeout])
-      return refreshed?.data?.token ?? null
+      const refreshed = await Promise.race([chromeApi.runtime.sendMessage({ type: 'audio.token', input: { owner_id: target.ownerId, run_id: target.id } }), timeout])
+      return target === run ? refreshed?.data?.token ?? null : null
     } catch {
       return null
     } finally {
@@ -132,38 +162,62 @@ export function createOffscreenCapture({
     }
   }
 
-  async function upload(buffer) {
+  async function upload(buffer, target) {
+    // Queued uploads cannot adopt the identity or refreshed token of a later capture.
+    if (target !== run || terminal || stopping) return false
     let response
     try {
-      response = await sendChunk(buffer, run.token)
+      response = await sendChunk(buffer, target.token, target)
+      if (target !== run) return false
     } catch {
-      // A network error or a timed out request never reached the backend: the audio has a hole.
-      reportError('Gagal mengirim audio ke server.')
+      // A network error or a timed out request never reached the backend: the audio has a hole,
+      // but the run lives, so the capture continues.
+      reportError('Gagal mengirim audio ke server.', 'upload', target)
       return false
     }
     if (response.status === 401) {
-      const token = await requestToken()
+      const token = await requestToken(target)
+      if (target !== run) return false
       if (!token) {
-        reportError('Token tidak dapat diperbarui.')
+        // The token cannot be refreshed: the run cannot continue, so the answer is terminal.
+        await failTerminal('Token tidak dapat diperbarui.', target)
         return false
       }
-      run.token = token
+      target.token = token
       try {
-        response = await sendChunk(buffer, token)
+        response = await sendChunk(buffer, token, target)
+        if (target !== run) return false
       } catch {
-        reportError('Gagal mengirim audio ke server.')
+        reportError('Gagal mengirim audio ke server.', 'upload', target)
         return false
       }
     }
     if (!response.ok) {
       // Only the status code is reported: the provider response body never reaches the message.
-      reportError(`Gagal mengirim audio ke server (${response.status}).`)
+      const message = `Gagal mengirim audio ke server (${response.status}).`
+      if (TERMINAL_STATUSES.has(response.status)) {
+        // The backend refused the run for good: the capture stops and the worker closes the run.
+        await failTerminal(message, target)
+        return false
+      }
+      reportError(message, 'upload')
       return false
     }
     chunks += 1
     bytes += buffer.byteLength
     report()
     return true
+  }
+
+  // failTerminal ends the capture when the backend refuses the run for good. The worker owns the
+  // run, so it closes it on the server.
+  async function failTerminal(message, target = run) {
+    if (target !== run) return
+    if (terminal) return
+    terminal = true
+    // The capture stops: the audio of a dead run is not recorded anymore.
+    await release()
+    reportError(message, 'terminal', target)
   }
 
   // The page owns the mono mixdown: it turns the raw channels of every worklet chunk into PCM16
@@ -197,6 +251,7 @@ export function createOffscreenCapture({
   }
 
   function enqueue(buffer) {
+    const target = run
     if (pending >= maxPendingFrames) {
       dropped += 1
       if (!overflowReported) {
@@ -208,9 +263,10 @@ export function createOffscreenCapture({
     }
     pending += 1
     queue = queue
-      .then(() => upload(buffer))
+      .then(() => upload(buffer, target))
       .catch(() => {})
       .then(() => {
+        if (target !== run) return
         pending -= 1
         if (pending === 0) overflowReported = false
       })
@@ -256,7 +312,12 @@ export function createOffscreenCapture({
     if (node) return
     // A new capture starts clean: the failures of the run before it do not silence its own.
     transcriptFailed = false
-    run = { id: input.run_id, token: input.token, baseUrl: input.base_url || '' }
+    terminal = false
+    stopping = false
+    lastErrorAt = 0
+    run = { id: input.run_id, ownerId: input.owner_id, token: input.token, baseUrl: input.base_url || '' }
+    chunks = 0; bytes = 0; dropped = 0; pending = 0; queue = Promise.resolve()
+    transcriptState = null
     stream = await mediaDevices.getUserMedia({
       audio: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: input.stream_id } },
     })
@@ -277,39 +338,43 @@ export function createOffscreenCapture({
       throw error
     }
     // The transcript belongs to one run: a new run empties the state of the old one.
-    await updateState(() => emptyState(input.run_id))
+    await updateState(() => emptyState(input.run_id, input.owner_id))
     openTranscript(input)
   }
 
   async function drain() {
     let timer
-    const timeout = new Promise(resolve => { timer = setTimeout(resolve, stopDrainTimeoutMs) })
-    await Promise.race([queue, timeout])
+    const timeout = new Promise(resolve => { timer = setTimeout(() => resolve(false), stopDrainTimeoutMs) })
+    const drained = await Promise.race([queue.then(() => true), timeout])
     clearTimeout(timer)
+    if (!drained) throw new Error('Antrean audio belum selesai dikirim. Coba hentikan lagi.')
   }
 
-  async function stop() {
-    if (!node && !audioContext) return
-    // The stream of the transcript ends with the capture: the last final stays in the state.
-    transcriptController?.abort()
-    transcriptController = null
-    // The worklet keeps up to 100 ms of audio that never leaves the page. Live transcription
-    // accepts that loss: the transcript only misses the last fraction of a second.
+  async function flush() {
     if (node) {
       node.port.onmessage = null
       node.port.close()
       node.disconnect()
+      node = null
     }
-    node = null
     if (pcm) {
       for (const chunk of pcm.flush()) enqueue(chunk.buffer)
       pcm = null
     }
     await release()
     await drain()
-    // The run is over, so the transcript is finished. A failed transcript keeps its status: the
-    // user must see that the transcription failed.
-    await updateState(state => state.status === 'transcript_error' ? state : applyStatus(state, 'transcribed'))
+  }
+
+  async function stop() {
+    const target = run
+    await flush()
+    stopping = true
+    // The transcript remains open through browser-audio drain and backend finalization. This final
+    // stop is sent only after the backend has emitted its final transcript event.
+    transcriptController?.abort()
+    transcriptController = null
+    await updateState(state => state.status === 'transcript_error' ? state : applyStatus(state, 'transcribed'), target)
+    if (target === run) run = { id: null, token: null, baseUrl: '' }
   }
 
   function handleMessage(message, respond) {
@@ -325,14 +390,24 @@ export function createOffscreenCapture({
         .catch(error => respond({ ok: false, error: { message: error.message } }))
       return true
     }
+    if (message?.type === 'audio.capture.flush') {
+      if (message.input?.run_id && (message.input.run_id !== run.id || message.input.owner_id !== run.ownerId)) {
+        respond({ ok: true }); return false
+      }
+      flush().then(() => respond({ ok: true })).catch(error => respond({ ok: false, error: { message: error.message } }))
+      return true
+    }
     if (message?.type === 'audio.capture.stop') {
+      if (message.input?.run_id && (message.input.run_id !== run.id || message.input.owner_id !== run.ownerId)) {
+        respond({ ok: true }); return false
+      }
       stop().then(() => respond({ ok: true })).catch(error => respond({ ok: false, error: { message: error.message } }))
       return true
     }
     return false
   }
 
-  return { start, stop, handleMessage }
+  return { start, flush, stop, handleMessage }
 }
 
 // The document bootstraps the capture; the tests import the factory above.
