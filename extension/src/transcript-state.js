@@ -1,0 +1,69 @@
+// Live transcript state is bounded session-only display, never the source of saved history/export.
+
+// TRANSCRIPT_KEY is the key of the transcript state in the session storage. The document offscreen
+// writes it, the popup reads it, and the worker waits for it when a run is stopped.
+export const TRANSCRIPT_KEY = 'transcript_state'
+
+// At most 200 finals are kept, so a long meeting does not fill the storage of the browser.
+const FINAL_LIMIT = 200
+
+// The status of the transcript and the sentence the popup shows for it.
+export const TRANSCRIPT_STATUS = {
+  waiting: 'Menunggu suara pertama',
+  transcribing: 'Transkrip live ditampilkan',
+  transcript_error: 'Transkripsi gagal.',
+  transcribed: 'Transkrip selesai',
+}
+
+// emptyState starts the transcript of one run: no segment, no text, and the run waits for the
+// first sound.
+export function emptyState(runId, ownerId) {
+  return { owner_id: ownerId, run_id: runId, status: 'waiting', last_seq: 0, finals: [], partial: null }
+}
+
+// applySegment adds one segment to the state. A final replaces the partial that is running and
+// joins the finals; a new partial replaces the previous one. The oldest finals are dropped when
+// the list is full.
+//
+// A segment the client already has is ignored: the server replays its whole backlog when the
+// client asks for it, and a repeated segment would show the same sentence twice.
+export function applySegment(state, segment) {
+  if (!segment || typeof segment.seq !== 'number') return state
+  if (segment.seq <= state.last_seq) return state
+  const next = { ...state, finals: [...state.finals], last_seq: segment.seq }
+  if (segment.type === 'final') {
+    next.finals.push({ seq: segment.seq, text: segment.text ?? '', start: segment.start, duration: segment.duration })
+    if (next.finals.length > FINAL_LIMIT) next.finals = next.finals.slice(next.finals.length - FINAL_LIMIT)
+    next.partial = null
+  } else {
+    next.partial = { seq: segment.seq, text: segment.text ?? '', start: segment.start, duration: segment.duration }
+  }
+  next.status = 'transcribing'
+  return next
+}
+
+// applyStatus changes the status of the transcript without touching the text. The message only
+// stays when there is one: it tells the user why the transcript failed.
+export function applyStatus(state, status, message) {
+  const next = { ...state, status }
+  if (message) next.message = message
+  else delete next.message
+  return next
+}
+
+// transcriptLines is what the popup shows: the finals in order, then the partial that is still
+// running. An empty text is left out.
+export function transcriptLines(state) {
+  if (!state) return []
+  const lines = (state.finals ?? []).map(final => final.text ?? '').filter(Boolean)
+  const partial = state.partial?.text ?? ''
+  if (partial) lines.push(partial)
+  return lines
+}
+
+// transcriptNotice is the reason of the failure that the popup shows under the status. It is left
+// out when the message says the same as the status, so the user does not read it twice.
+export function transcriptNotice(state) {
+  if (!state?.message) return null
+  return state.message === TRANSCRIPT_STATUS[state.status] ? null : state.message
+}

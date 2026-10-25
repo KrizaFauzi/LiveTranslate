@@ -1,5 +1,7 @@
 # Login/Register Implementation Plan
 
+> **HISTORICAL — Superseded by 2026-10-24 execution planning.** This document describes the earlier Node/Drizzle auth architecture. See `2026-10-24-execution-master.md` and `2026-10-24-details/01-architecture-data.md` for the current design. Contents are preserved for history; do not execute.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax for tracking.
 
 **Goal:** Implementasikan register/login email-password dan sesi extension.

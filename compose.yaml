@@ -9,10 +9,21 @@ services:
       SUPABASE_AUTH_REDIRECT_URL: ${SUPABASE_AUTH_REDIRECT_URL:-}
       DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
       DEEPGRAM_MODEL: ${DEEPGRAM_MODEL:-}
+      DEEPGRAM_LANGUAGE: ${DEEPGRAM_LANGUAGE:-multi}
       SUMOPOD_BASE_URL: ${SUMOPOD_BASE_URL:-https://ai.sumopod.com/v1}
       SUMOPOD_API_KEY: ${SUMOPOD_API_KEY:-}
       SUMOPOD_MODEL: ${SUMOPOD_MODEL:-}
     ports:
       - "127.0.0.1:${APP_PORT:-8989}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777,nosuid,nodev,noexec
+    mem_limit: 1g
+    cpus: 2.0
+    pids_limit: 256
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - ./fixtures:/app/fixtures:ro

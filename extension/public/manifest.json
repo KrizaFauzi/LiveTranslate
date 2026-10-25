@@ -7,9 +7,19 @@
     "default_popup": "index.html"
   },
   "host_permissions": [
-    "http://localhost:8989/*"
+    "http://localhost:8989/*",
+    "https://meet.google.com/*",
+    "https://*.zoom.us/*",
+    "https://meet.jit.si/*"
   ],
   "permissions": [
-    "storage"
-  ]
+    "storage",
+    "alarms",
+    "tabCapture",
+    "offscreen"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  }
 }

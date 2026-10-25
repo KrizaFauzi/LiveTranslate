@@ -20,6 +20,7 @@ type Config struct {
 	SupabaseAuthRedirectURL string
 	DeepgramKey             string
 	DeepgramModel           string
+	DeepgramLanguage        string
 	SumopodBaseURL          string
 	SumopodKey              string
 	SumopodModel            string
@@ -33,8 +34,9 @@ func Load() Config {
 	return Config{
 		SupabaseURL: os.Getenv("SUPABASE_URL"), SupabaseKey: os.Getenv("SUPABASE_PUBLISHABLE_KEY"),
 		SupabaseAuthRedirectURL: os.Getenv("SUPABASE_AUTH_REDIRECT_URL"), DeepgramKey: os.Getenv("DEEPGRAM_API_KEY"),
-		DeepgramModel: os.Getenv("DEEPGRAM_MODEL"), SumopodBaseURL: base,
-		SumopodKey: os.Getenv("SUMOPOD_API_KEY"), SumopodModel: os.Getenv("SUMOPOD_MODEL"),
+		DeepgramModel: os.Getenv("DEEPGRAM_MODEL"), DeepgramLanguage: os.Getenv("DEEPGRAM_LANGUAGE"),
+		SumopodBaseURL: base,
+		SumopodKey:     os.Getenv("SUMOPOD_API_KEY"), SumopodModel: os.Getenv("SUMOPOD_MODEL"),
 	}
 }
 
@@ -51,8 +53,13 @@ func (c Config) Supabase() (*url.URL, error) {
 		return nil, err
 	}
 	u, err := url.Parse(c.SupabaseURL)
-	if err != nil {
-		return nil, errors.New("SUPABASE_URL tidak dapat dibaca")
+	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
+		(u.Path != "" && u.Path != "/") {
+		return nil, errors.New("SUPABASE_URL harus berupa origin tanpa path, kredensial, query, atau fragment")
+	}
+	local := u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "::1"
+	if u.Scheme != "https" && !(u.Scheme == "http" && local) {
+		return nil, errors.New("SUPABASE_URL harus HTTPS atau HTTP loopback untuk lokal")
 	}
 	if err := Require("SUPABASE_PUBLISHABLE_KEY", c.SupabaseKey); err != nil {
 		return nil, err
